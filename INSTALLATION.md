@@ -22,7 +22,7 @@ dotnet build src/FamilyTimeMultiplayer -c Release -p:GameDir="/path/to/Family Ti
 The default `GameDir` is `$HOME/Games/Family Time`. Build separately against each target game's managed assemblies. For a redistribution package, first install a compatible BepInEx loader in the target game folder, then run:
 
 ```bash
-FAMILYTIME_DIR="/path/to/Family Time" tools/package.sh
+FAMILYTIME_DIR="/path/to/Family Time" tools/package.sh build91-linux
 ```
 
-The package script reads the version and network protocol from source and creates an archive under `dist/`. Do not distribute game assemblies, personal identity keys, save files or logs.
+Choose `build37-windows-dx11`, `build91-linux`, `build91-windows-dx11`, or `build91-windows-dx12` to match the target installation. The plugin-only archive requires BepInEx already installed and is written under `dist/`. Do not distribute game assemblies, personal identity keys, save files or logs.
