@@ -7,8 +7,16 @@ namespace FamilyTimeMultiplayer.Game;
 public sealed class HostRigidRegistry
 {
     private readonly Dictionary<RigidTransform, int> _netIds = new Dictionary<RigidTransform, int>();
-    private readonly List<RigidTransform> _destroyed = new List<RigidTransform>();
+    private readonly List<(RigidTransform Rigid, int NetId)> _destroyed = new List<(RigidTransform, int)>();
+    private readonly LegacyRigidIdentityAdapter? _entities;
     private int _nextNetId;
+
+    public HostRigidRegistry() { }
+
+    public HostRigidRegistry(FamilyTimeMultiplayer.Core.Replication.GenericEntityRegistry<object> entities)
+    {
+        _entities = new LegacyRigidIdentityAdapter(entities);
+    }
 
     public int Count => _netIds.Count;
 
@@ -20,7 +28,9 @@ public sealed class HostRigidRegistry
         {
             if (RigidTransformApi.TryGetManagedRigid(manager, i, out RigidTransform rigid))
             {
-                _netIds[rigid] = _nextNetId++;
+                int netId = _nextNetId++;
+                _netIds[rigid] = netId;
+                _entities?.Bind(netId, rigid);
             }
         }
     }
@@ -32,6 +42,7 @@ public sealed class HostRigidRegistry
             netId = _nextNetId++;
             _netIds.Add(rigid, netId);
         }
+        _entities?.Bind(netId, rigid);
         return new RigidSpawn(netId, RequirePrefabIndex(rigid), GatInterop.ToNet(rigid.position), ToNet(rigid.rotation));
     }
 
@@ -42,6 +53,7 @@ public sealed class HostRigidRegistry
             return false;
         }
         _netIds.Remove(rigid);
+        _entities?.Unbind(netId);
         return true;
     }
 
@@ -84,14 +96,15 @@ public sealed class HostRigidRegistry
         {
             if (!RigidTransformApi.IsAlive(entry.Key))
             {
-                _destroyed.Add(entry.Key!);
+                _destroyed.Add((entry.Key!, entry.Value));
                 removed ??= new List<int>();
                 removed.Add(entry.Value);
             }
         }
-        foreach (RigidTransform gone in _destroyed)
+        foreach ((RigidTransform gone, int netId) in _destroyed)
         {
             _netIds.Remove(gone);
+            _entities?.Unbind(netId);
         }
         return removed ?? (IReadOnlyList<int>)System.Array.Empty<int>();
     }

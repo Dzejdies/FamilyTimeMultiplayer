@@ -5,6 +5,7 @@ using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Interpolation;
 using FamilyTimeMultiplayer.Core.Protocol;
+using FamilyTimeMultiplayer.Core.Replication;
 using FamilyTimeMultiplayer.Core.Transport;
 using FamilyTimeMultiplayer.Game;
 using GAT;
@@ -42,6 +43,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private int _connectAttempts = 1;
     private double _retryAt = -1;
     private readonly SnapshotInterpolator<ushort> _interpolator;
+    private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
     private readonly ClientRigidRegistry _rigids;
     private RigidIndexMapMessage? _pendingRigidMap;
     private readonly AgentPuppeteer _puppeteer = new AgentPuppeteer();
@@ -69,8 +71,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _target = target;
         _endpointDescription = target.Description;
         _interpolator = new SnapshotInterpolator<ushort>(settings.InterpolationDelaySeconds);
-        _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds);
-        _registry = new ReplicatedAgentRegistry(_puppeteer);
+        _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds, _entityRegistry);
+        _registry = new ReplicatedAgentRegistry(_puppeteer, _entityRegistry);
         _mamas = new Families.ClientMamaMirror(log);
         _pendingConnect = target.Start(ConnectTimeout);
         Status = $"Connecting to {_endpointDescription}...";
@@ -380,6 +382,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         Families.FamilyHud.Clear();
         _mamas.Clear();
         _rigids.ReleaseAll();
+        _registry.PrepareForWorldReload();
+        _entityRegistry.ChangeWorldGeneration(welcome.WorldGeneration);
         _welcome = welcome;
         _incomingWorld = new IncomingWorldFile(WorldFiles.PathFor(WorldFiles.ClientReceivedMapName), welcome.WorldByteLength);
         _phase = ClientPhase.ReceivingWorld;

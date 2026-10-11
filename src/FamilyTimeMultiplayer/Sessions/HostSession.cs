@@ -7,6 +7,7 @@ using System.Net;
 using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Protocol;
+using FamilyTimeMultiplayer.Core.Replication;
 using FamilyTimeMultiplayer.Core.Transport;
 using FamilyTimeMultiplayer.Core.Transport.Relay;
 using FamilyTimeMultiplayer.Families;
@@ -84,7 +85,9 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     private readonly AgentSnapshotSampler _sampler = new AgentSnapshotSampler();
     private readonly RemoteAvatarService _avatars = new RemoteAvatarService();
     private readonly DayStateBridge _day = new DayStateBridge();
-    private readonly HostRigidRegistry _rigids = new HostRigidRegistry();
+    private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
+    private readonly LegacyAgentIdentityAdapter _agentEntities;
+    private readonly HostRigidRegistry _rigids;
     private readonly HostCommandHub _commands;
     private double _nextPoolBroadcast;
     private double _nextFamilyStatus;
@@ -114,6 +117,8 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
 
     public HostSession(ManualLogSource log, MultiplayerSettings settings, ICoroutineHost coroutines, FamilyMode familyMode)
     {
+        _agentEntities = new LegacyAgentIdentityAdapter(_entityRegistry);
+        _rigids = new HostRigidRegistry(_entityRegistry);
         _familyMode = familyMode;
         _log = log;
         _water = new HostWaterSampler(log);
@@ -134,6 +139,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                 _log.LogInfo($"[Host] opening a room on relay {_relay.Endpoint}");
             }
             _rigids.AdoptCurrentWorld();
+            AdoptCurrentAgents();
             _commands = new HostCommandHub(log);
             if (familyMode == Core.Protocol.FamilyMode.Separate)
             {
@@ -258,6 +264,10 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
 
     public void OnAgentsCreated(IReadOnlyList<Handle> handles, IReadOnlyList<int> templateIndices, IReadOnlyList<Matrix4x4> matrices)
     {
+        foreach (Handle handle in handles)
+        {
+            if (!handle.isNull) _agentEntities.Bind(handle.stableIndex, handle.stableIndex);
+        }
         if (!_peers.Any(ReceivesWorldEvents))
         {
             return;
@@ -272,6 +282,10 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
 
     public void OnAgentsDeleted(IReadOnlyList<Handle> handles)
     {
+        foreach (Handle handle in handles)
+        {
+            if (!handle.isNull) _agentEntities.Unbind(handle.stableIndex);
+        }
         if (!_peers.Any(ReceivesWorldEvents))
         {
             return;
@@ -302,10 +316,12 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     public void OnHostWorldReloaded()
     {
         _addonWorldGeneration++;
+        _entityRegistry.ChangeWorldGeneration(_addonWorldGeneration);
         _addons.Reload();
         HostPlayerAuthority.Remove(LocalPlayerId);
         _water.Reset();
         _rigids.AdoptCurrentWorld();
+        AdoptCurrentAgents();
         if (_familyMode == Core.Protocol.FamilyMode.Separate)
         {
             HostFamilyService.EnsureStarted(_log, _hostName);
@@ -354,6 +370,16 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
 
     private static bool ReceivesWorldEvents(Peer peer) =>
         peer.Phase == PeerPhase.Live || peer.Backlog != null;
+
+    private void AdoptCurrentAgents()
+    {
+        if (World.gat == null) return;
+        for (int physicalIndex = 0; physicalIndex < World.gat.instanceCount; physicalIndex++)
+        {
+            Handle handle = World.gat.GetHandle((ushort)physicalIndex);
+            if (!handle.isNull) _agentEntities.Bind(handle.stableIndex, handle.stableIndex);
+        }
+    }
 
     private void SendWorldEvent(INetMessage message)
     {

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using FamilyTimeMultiplayer.Core.Interpolation;
 using FamilyTimeMultiplayer.Core.Protocol;
+using FamilyTimeMultiplayer.Core.Replication;
 using GAT;
 using UnityEngine;
 using GatSimulation = global::GAT.GAT;
@@ -11,17 +12,24 @@ public sealed class ReplicatedAgentRegistry
 {
     private readonly AgentIdentityMap _identities = new AgentIdentityMap();
     private readonly AgentPuppeteer _puppeteer;
+    private readonly LegacyAgentIdentityAdapter? _entities;
 
     public ReplicatedAgentRegistry(AgentPuppeteer puppeteer)
     {
         _puppeteer = puppeteer;
     }
 
+    public ReplicatedAgentRegistry(AgentPuppeteer puppeteer, GenericEntityRegistry<object> entities)
+        : this(puppeteer)
+    {
+        _entities = new LegacyAgentIdentityAdapter(entities);
+    }
+
     public AgentIdentityMap Identities => _identities;
 
     public int AdoptLoadedWorld()
     {
-        _identities.Clear();
+        PrepareForWorldReload();
         GatSimulation gat = GatInterop.RequireGat();
         for (int physical = 0; physical < gat.instanceCount; physical++)
         {
@@ -29,6 +37,7 @@ public sealed class ReplicatedAgentRegistry
             if (!handle.isNull)
             {
                 _identities.Bind(handle.stableIndex, handle.stableIndex);
+                _entities?.Bind(handle.stableIndex, handle.stableIndex);
             }
         }
         return _identities.Count;
@@ -68,6 +77,7 @@ public sealed class ReplicatedAgentRegistry
                 for (int i = 0; i < handles.Length; i++)
                 {
                     _identities.Bind(group.Value.HostIndices[i], handles[i].stableIndex);
+                    _entities?.Bind(group.Value.HostIndices[i], handles[i].stableIndex);
                     created++;
                 }
             }
@@ -84,6 +94,7 @@ public sealed class ReplicatedAgentRegistry
             {
                 continue;
             }
+            _entities?.Unbind(message.StableIndices[i]);
             _identities.UnbindHost(message.StableIndices[i], out _);
             _puppeteer.Forget(local);
             handles.Add(GatInterop.ToHandle(local));
@@ -96,5 +107,14 @@ public sealed class ReplicatedAgentRegistry
             }
         }
         return handles.Count;
+    }
+
+    public void PrepareForWorldReload()
+    {
+        foreach (KeyValuePair<ushort, ushort> pair in _identities.HostToLocalPairs)
+        {
+            _entities?.Unbind(pair.Key);
+        }
+        _identities.Clear();
     }
 }

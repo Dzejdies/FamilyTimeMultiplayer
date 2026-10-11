@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using FamilyTimeMultiplayer.Core.Interpolation;
 using FamilyTimeMultiplayer.Core.Protocol;
+using FamilyTimeMultiplayer.Core.Replication;
 using GAT;
 using UnityEngine;
 
@@ -12,12 +13,19 @@ public sealed class ClientRigidRegistry
     private readonly Dictionary<RigidTransform, int> _netIdByRigid = new Dictionary<RigidTransform, int>();
     private readonly Dictionary<int, bool> _carried = new Dictionary<int, bool>();
     private readonly HashSet<int> _locallyHeld = new HashSet<int>();
+    private readonly LegacyRigidIdentityAdapter? _entities;
     private readonly SnapshotInterpolator<int> _interpolator;
     private readonly List<InterpolatedEntry<int>> _sampled = new List<InterpolatedEntry<int>>();
 
     public ClientRigidRegistry(double interpolationDelaySeconds)
     {
         _interpolator = new SnapshotInterpolator<int>(interpolationDelaySeconds);
+    }
+
+    public ClientRigidRegistry(double interpolationDelaySeconds, GenericEntityRegistry<object> entities)
+        : this(interpolationDelaySeconds)
+    {
+        _entities = new LegacyRigidIdentityAdapter(entities);
     }
 
     public int Count => _byNetId.Count;
@@ -88,6 +96,7 @@ public sealed class ClientRigidRegistry
                     BindingVersion++;
                     _byNetId.Remove(netId);
                     _netIdByRigid.Remove(rigid);
+                    _entities?.Unbind(netId);
                     _carried.Remove(netId);
                     _locallyHeld.Remove(netId);
                     if (RigidTransformApi.IsAlive(rigid))
@@ -145,6 +154,10 @@ public sealed class ClientRigidRegistry
     public void ReleaseAll()
     {
         _locallyHeld.Clear();
+        foreach (KeyValuePair<int, RigidTransform> entry in _byNetId)
+        {
+            _entities?.Unbind(entry.Key);
+        }
         foreach (RigidTransform rigid in _byNetId.Values)
         {
             if (RigidTransformApi.IsAlive(rigid) && !rigid.IsCarried)
@@ -164,6 +177,7 @@ public sealed class ClientRigidRegistry
         BindingVersion++;
         _byNetId[netId] = rigid;
         _netIdByRigid[rigid] = netId;
+        _entities?.Bind(netId, rigid);
         rigid.SetFrozen(true);
     }
 }
