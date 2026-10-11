@@ -1,0 +1,24 @@
+[Unit]
+Description=Family Time Multiplayer relay (room codes)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/ftmp-relay/ftmp-relay --port 27780
+Restart=on-failure
+RestartSec=3
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LimitNOFILE=8192
+Environment=DOTNET_gcServer=0
+
+[Install]
+WantedBy=multi-user.target

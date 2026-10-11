@@ -1,0 +1,10 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsNotAsErrors>NU1701;MSB3277</WarningsNotAsErrors>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GameDir Condition="'$(GameDir)' == ''">$(HOME)/Games/Family Time</GameDir>
+  </PropertyGroup>
+</Project>

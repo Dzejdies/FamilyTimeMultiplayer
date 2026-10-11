@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>FamilyTimeMultiplayer.Relay</RootNamespace>
+    <AssemblyName>ftmp-relay</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FamilyTimeMultiplayer.Core/FamilyTimeMultiplayer.Core.csproj" />
+  </ItemGroup>
+</Project>
