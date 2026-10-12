@@ -31,7 +31,6 @@ public sealed class CommandMarkerScenario : ScenarioRunner
         _active = this;
         FamilyTimeMultiplayer.Game.GameApiCompatibility.SetTargetFrameRate(60);
         FamilyTimeMultiplayer.Game.GameApiCompatibility.RunInBackground = true;
-        Traverse.Create(MultiplayerController.Current).Field("_gameRunsInBackground").SetValue(true);
     }
 
     public override void Tick(double now, ISession? session)
