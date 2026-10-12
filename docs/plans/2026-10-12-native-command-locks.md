@@ -33,3 +33,5 @@ WHY: Action semantics, family authority and client native ledger must agree.
 4. Add command-lock state adapter and one host publisher, using native reads, change detection, batched state delivery and snapshot refresh. Apply through native setter in authorized replication scope.
 5. Test Build105 with pre-join locks, repeated own-child set/unset, bulk selection and foreign-family refusal. Preserve native targeting/UI.
 6. Run tests/build/diff checks, commit cohesive deliverables, update documentation and install/package only Windows Build105.
+
+Completed: contract tests, native single/batch forwarding, host/client family filtering, physical-range correction, ledger component capture/apply, snapshot coverage and Build105 runtime checks. Evidence: [native command locks](../validation/2026-10-12-build105-command-locks.md).

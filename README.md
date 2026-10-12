@@ -20,7 +20,7 @@ A host-authoritative co-op mod for Family Time. It synchronizes players, childre
 | Component | Compatible version / target |
 | --- | --- |
 | Family Time | Patreon Build 105, Windows (also through Proton) |
-| Multiplayer on every peer | Family Time Multiplayer 0.2.0, network protocol 24 |
+| Multiplayer on every peer | Family Time Multiplayer 0.2.1, network protocol 25 |
 | Optional aircraft addon | Family Time Aircraft 0.1.3 on every peer; required only when using aircraft in multiplayer |
 | Mod loader | BepInEx 5.4.23.5 |
 | Linux / Steam Deck | Proton; set `WINEDLLOVERRIDES="winhttp=n,b" %command%` |

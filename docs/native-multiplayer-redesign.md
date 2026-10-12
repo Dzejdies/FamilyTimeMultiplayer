@@ -1,6 +1,6 @@
 # Native multiplayer redesign
 
-Status: approved by the user. The command mutation boundary, capability negotiation, addon integration API and native appearance replication are implemented. Per-player native follow isolation is implemented. Runtime coverage and remaining limitations are recorded in [Build 105 validation](validation/2026-10-12-build105-native.md).
+Status: approved by the user. The command mutation boundary, capability negotiation, addon integration API and native appearance replication are implemented. Per-player native follow isolation and native command-lock action/state replication are implemented. See also [command-lock validation](validation/2026-10-12-build105-command-locks.md). Runtime coverage and remaining limitations are recorded in [Build 105 validation](validation/2026-10-12-build105-native.md).
 
 ## Required behavior
 
