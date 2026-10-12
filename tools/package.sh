@@ -2,10 +2,10 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 game="${FAMILYTIME_DIR:-$HOME/Games/Family Time}"
-variant="${1:?Choose build37-windows-dx11, build91-linux, build91-windows-dx11, or build91-windows-dx12}"
+variant="${1:?Choose build105-windows}"
 shift
 case "$variant" in
-  build37-windows-dx11|build91-linux|build91-windows-dx11|build91-windows-dx12) ;;
+  build105-windows) ;;
   *) echo "unknown game variant: $variant" >&2; exit 1 ;;
 esac
 export DOTNET_ROOT="${DOTNET_ROOT:-$HOME/.dotnet}" PATH="$HOME/.dotnet:$PATH"
@@ -29,7 +29,7 @@ Target: $variant
 Requires Family Time and BepInEx 5.4.23.5 installed for this game build.
 Extract the BepInEx directory into the game folder containing FamilyTime.exe.
 Use the same Multiplayer version on every peer.
-Build 91 variants are mutually compatible; other builds must match exactly.
+Use Build 105 Windows with the same game build identity on every peer.
 Linux/Steam Deck on Proton: set WINEDLLOVERRIDES="winhttp=n,b" %command% in Steam launch options.
 Keep BepInEx/config/ftmp-player.key private and preserve it when upgrading.
 TXT

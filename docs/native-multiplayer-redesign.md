@@ -1,6 +1,6 @@
 # Native multiplayer redesign
 
-Status: proposed design awaiting approval. This document does not describe completed implementation.
+Status: approved by the user. The command mutation boundary, capability negotiation, addon integration API and native appearance replication are implemented. Runtime coverage and remaining limitations are recorded separately.
 
 ## Required behavior
 

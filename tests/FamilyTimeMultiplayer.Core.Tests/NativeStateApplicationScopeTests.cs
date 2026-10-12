@@ -30,6 +30,26 @@ public sealed class NativeStateApplicationScopeTests
         Assert.False(state.IsApplyingRemoteState);
     }
 
+    [Fact]
+    public void ThrowingNativeAdapterRestoresScopeAndRejectsState()
+    {
+        bool nativeScope = false;
+        var registry = new GenericEntityRegistry<object>(1);
+        var identity = new NetworkEntityId(1, new EntityKind("agent"), 7);
+        registry.Register(identity, (ushort)21, 1);
+        var state = new GenericStateReplicationService<object>(registry, false, () =>
+        {
+            nativeScope = true;
+            return new Lease(() => nativeScope = false);
+        });
+        state.RegisterAdapter(new AgentInfoComponentAdapter((_, _) => throw new InvalidOperationException("Native failure")));
+        GenericStateApplyResult result = state.Apply(new GenericEntityStateMessage(identity, 1,
+            new EntityStateDomain("appearance"), 1, 1, new byte[4]));
+        Assert.Equal(GenericStateApplyStatus.Rejected, result.Status);
+        Assert.False(nativeScope);
+        Assert.False(state.IsApplyingRemoteState);
+    }
+
     private sealed class Lease : IDisposable
     {
         private readonly Action _release;

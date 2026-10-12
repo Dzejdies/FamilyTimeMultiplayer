@@ -14,7 +14,7 @@ public sealed class Plugin : BaseUnityPlugin
 {
     public const string Guid = "dzejdies.familytime.multiplayer";
     public const string Name = "Family Time Multiplayer";
-    public const string Version = "0.1.14";
+    public const string Version = "0.2.0";
 
     private void Awake()
     {

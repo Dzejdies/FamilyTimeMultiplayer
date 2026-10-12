@@ -19,15 +19,19 @@ A host-authoritative co-op mod for Family Time. It synchronizes players, childre
 
 | Component | Compatible version / target |
 | --- | --- |
-| Family Time | Patreon Build 37 or Build 91; compile/package against the matching game assemblies |
-| Multiplayer on every peer | Family Time Multiplayer 0.1.14, network protocol 20 |
+| Family Time | Patreon Build 105, Windows (also through Proton) |
+| Multiplayer on every peer | Family Time Multiplayer 0.2.0, network protocol 24 |
 | Optional aircraft addon | Family Time Aircraft 0.1.3 on every peer; required only when using aircraft in multiplayer |
 | Mod loader | BepInEx 5.4.23.5 |
 | Linux / Steam Deck | Proton; set `WINEDLLOVERRIDES="winhttp=n,b" %command%` |
 
-The game checks build identity when peers connect. Build 91 variants (Linux, Windows DX11, and Windows DX12) are mutually compatible. Other supported builds must have the same game build identity on every peer. Build each plugin against the matching game's assemblies; a DLL built for one game build is not a universal binary. Windows runtime checks were performed under Proton; native Windows execution has not been verified. No other gameplay mods have been compatibility-tested; plugins that alter networking, input, save/load, or world simulation may conflict.
+Every peer must use Build 105 Windows with the same game build identity and Multiplayer protocol. Linux and Steam Deck run the Windows game through Proton; the native Linux game is not the build target.
 
-Every multiplayer participant must use the same Multiplayer version and protocol. The aircraft addon is optional for solo play, but multiplayer aircraft requires the same Aircraft version and matching game variant on all participants.
+Family Time owns input, targeting, crosshair, HUD, camera, animations and local presentation. Multiplayer forwards supported shared-world mutations to the authenticated host, which checks family ownership and native gameplay rules and replicates the result. Each player retains their own family.
+
+Local cosmetic mods do not need matching installations. Network addons declare required or optional capabilities: missing or incompatible required content rejects the connection; optional capabilities are delivered only to compatible peers. Addons can register authorized actions, entity bindings and component state through `IReplicatedSessionAddonContext`. See [the integration API](docs/mod-compatibility.md).
+
+Unknown mods are not automatically supported. Custom code/assets must exist on the receiving peer or have an explicit adapter-defined fallback; unhandled actions cannot execute on the host. The aircraft addon remains a required network dependency when registered. Its Build 105 compatibility has not been validated.
 
 ## Identity and saves
 

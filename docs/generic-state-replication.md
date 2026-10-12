@@ -6,11 +6,11 @@ The generic pipeline sends only state exposed by an explicitly registered `IEnti
 
 Host and client register adapters with their session's `RegisterGenericStateAdapter` method. An adapter declares one adapter ID, schema version, state domain, and supported entity kinds. Its `Capture` method serializes host state, `TryValidate` checks the encoded payload, and `Apply` updates the already-bound local entity. The host calls `PublishGenericState` after an authorized game change and once after binding an entity to seed its current component state for future joiners. Capture is explicit; the service does not observe arbitrary fields automatically. Clients cannot publish state; the host rejects a client-originated generic state message.
 
-The adapter ID owns its state domain for each entity. If a legacy path or another adapter already owns that domain, registration may succeed but publishing or applying the state fails explicitly when ownership is claimed. Existing legacy domains remain assigned to their current replication code.
+The adapter ID owns its state domain for each entity. If a legacy path or another adapter already owns that domain, registration may succeed but publishing or applying the state fails explicitly when ownership is claimed. Existing legacy domains remain assigned to their current replication code, except appearance: the production `AgentInfoComponentAdapter` is its sole writer.
 
 ## Wire envelope
 
-Protocol version is 21. Peers using earlier protocol versions are rejected by the existing strict handshake check; there is no mixed-version negotiation. Message type 43 contains:
+Protocol version is 24. Peers using earlier protocol versions are rejected by the existing strict handshake check; there is no mixed-version negotiation. Message type 43 contains:
 
 | Field | Purpose |
 | --- | --- |
@@ -27,8 +27,10 @@ The host retains the latest published message for each entity/domain and integra
 
 If a state message arrives before its entity binding, the client keeps only the latest message per entity/domain, bounded to 128 updates and 4 MiB of payload. If the bound is exceeded, the service returns `ResyncRequired`; session integration terminates the inconsistent connection so it can reload the host world. When an entity becomes available, integrations call `NotifyGenericEntityAvailable` to apply its pending state.
 
-Applying remote state exposes `IsApplyingRemoteState` during the adapter call. Integrations must use that signal to suppress their local change observer while `Apply` mutates state; the replication service itself never emits a message from `Apply`.
+The Unity client enters an exception-safe authorized replication scope for immediate and deferred application so native mutation hooks do not echo received state. Applying remote state exposes `IsApplyingRemoteState` during the adapter call. Integrations must use that signal to suppress their local change observer while `Apply` mutates state; the replication service itself never emits a message from `Apply`.
 
 ## Current scope and limits
 
-The in-memory tests exercise a synthetic counter component across two clients, a late joiner, snapshot/delta reordering, duplicate delivery, stale lifecycle updates, and bounded pending state. Session APIs transport registered state, but no production gameplay adapter is registered in this stage. Save files remain the game's native format. Adapter-specific action forwarding, automatic component discovery, external mod compatibility, and real Unity runtime validation are not included.
+The in-memory tests cover two clients, late joining, reordering, duplicate delivery, stale lifecycle updates, snapshot replacement and bounded pending state. Production sessions register the native agent appearance adapter; remaining legacy domains keep their existing owners. Before loading a snapshot, message 46 supplies host lifecycle revisions. Message 47 batches up to 256 states and 1 MiB of payload; dense appearance snapshots do not create thousands of queued frames.
+
+Save files remain native. Arbitrary components and custom assets need explicit addon adapters; nothing discovers or serializes arbitrary object graphs automatically. See [mod integration](mod-compatibility.md) for scoped registration and capabilities.

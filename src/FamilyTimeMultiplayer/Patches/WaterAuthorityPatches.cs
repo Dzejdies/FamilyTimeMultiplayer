@@ -21,7 +21,7 @@ internal static class ClientWaterMutationPatch
 {
     private static bool Prefix(ref bool __result)
     {
-        if (ReplicationGate.Role != SessionRole.Client) return true;
+        if (!ReplicationGate.BlocksLocalSimulation) return true;
         __result = false;
         return false;
     }
