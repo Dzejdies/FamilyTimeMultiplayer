@@ -4,6 +4,8 @@
 
 Use the release archive built for your Family Time game build. Install BepInEx 5.4.23.5 first if the archive does not include a loader. Close the game, extract the archive into the folder containing `FamilyTime.exe`, and let it merge with the existing `BepInEx` directory. Start the game after extraction.
 
+When upgrading, keep only one copy of `FamilyTimeMultiplayer.dll` and `FamilyTimeMultiplayer.Core.dll` under `BepInEx/plugins`. If the previous version used DLLs directly in that folder, replace them there or remove those old copies before extracting the new `FamilyTimeMultiplayer` subfolder.
+
 For Linux/Steam Deck on Proton, set `WINEDLLOVERRIDES="winhttp=n,b" %command%` in Steam launch options. Windows does not need this option.
 
 All players must use the same mod version. Use Build 105 Windows with identical game build identities on every peer. Native Linux game binaries are not supported by this build. For room codes, all players select the same relay in the in-game settings. Direct connections require the configured TCP port to be reachable.

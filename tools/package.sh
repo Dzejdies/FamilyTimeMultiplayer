@@ -28,6 +28,7 @@ Target: $variant
 
 Requires Family Time and BepInEx 5.4.23.5 installed for this game build.
 Extract the BepInEx directory into the game folder containing FamilyTime.exe.
+Keep only one copy of the two Multiplayer DLLs under BepInEx/plugins; remove old root-level copies when upgrading to this subfolder layout.
 Use the same Multiplayer version on every peer.
 Use Build 105 Windows with the same game build identity on every peer.
 Linux/Steam Deck on Proton: set WINEDLLOVERRIDES="winhttp=n,b" %command% in Steam launch options.

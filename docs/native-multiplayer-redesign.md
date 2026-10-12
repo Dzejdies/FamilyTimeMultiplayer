@@ -1,6 +1,6 @@
 # Native multiplayer redesign
 
-Status: approved by the user. The command mutation boundary, capability negotiation, addon integration API and native appearance replication are implemented. Runtime coverage and remaining limitations are recorded separately.
+Status: approved by the user. The command mutation boundary, capability negotiation, addon integration API and native appearance replication are implemented. Per-player native follow isolation is implemented. Runtime coverage and remaining limitations are recorded in [Build 105 validation](validation/2026-10-12-build105-native.md).
 
 ## Required behavior
 
@@ -10,11 +10,11 @@ Every player controls their own Wolf Mama and children. Host-side identity comes
 
 ## Evidence and existing work
 
-The working tree already contains generic entity identities, component adapters, generic action messages, session endpoints and tests. Reuse these contracts rather than build a competing pipeline. Current documentation explicitly says no production gameplay component adapter is registered; generic transport alone does not provide arbitrary mod compatibility.
+The baseline checkpoint contained generic entity identities, component adapters, generic action messages, session endpoints and tests. Reuse these contracts rather than build a competing pipeline. Baseline documentation stated that no production gameplay component adapter was registered; generic transport alone does not provide arbitrary mod compatibility.
 
-`Patches/ClientCommandPatches.cs` returns false from entire native command input callbacks on clients, including interaction cancellation and long press. `Commands/ClientCommandBridge.cs` then resolves supported targets separately and requests native crosshair cache invalidation on feedback or detach. This is evidence of a broad interception boundary, not proof of the reported crosshair bug. Runtime reproduction must establish the actual cause before claiming a fix.
+Before this migration, `Patches/ClientCommandPatches.cs` returned false from entire native command input callbacks on clients, including interaction cancellation and long press. `Commands/ClientCommandBridge.cs` then resolved supported targets separately and requested native crosshair cache invalidation on feedback or detach. This is evidence of a broad interception boundary, not proof of the reported crosshair bug. Runtime reproduction must establish the actual cause before claiming a fix.
 
-`Core/Protocol/AddonMessages.cs` requires identical registered addon sets, versions and content hashes. This is an explicit compatibility contract that must be migrated deliberately, including per-peer message routing and late-join snapshots.
+Before this migration, `Core/Protocol/AddonMessages.cs` required identical registered addon sets, versions and content hashes. This is an explicit compatibility contract that must be migrated deliberately, including per-peer message routing and late-join snapshots.
 
 ## Proposed boundaries
 
