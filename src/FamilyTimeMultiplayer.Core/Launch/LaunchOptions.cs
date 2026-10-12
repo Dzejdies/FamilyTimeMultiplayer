@@ -47,6 +47,7 @@ public sealed class LaunchOptions
     public FamilyMode? FamilyMode { get; }
     public string? JoinText { get; }
     public string? RelayAddress { get; }
+    public bool UsesMultiplayerSaveCollection => Action != LaunchAction.None || LoadMap != null || SaveMap != null;
 
     public static LaunchOptions Parse(IReadOnlyList<string> args)
     {

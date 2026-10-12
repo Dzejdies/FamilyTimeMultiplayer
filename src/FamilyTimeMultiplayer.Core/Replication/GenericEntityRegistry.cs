@@ -115,6 +115,25 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
         throw new KeyNotFoundException($"Entity {identity} has no local binding.");
     }
 
+    public bool TryGetLifecycleRevision(NetworkEntityId identity, out ulong revision)
+    {
+        EnsureIdentity(identity);
+        if (_bindings.TryGetValue(identity, out Binding? binding))
+        {
+            revision = binding.Revision;
+            return true;
+        }
+        return _lastRevision.TryGetValue(identity, out revision);
+    }
+
+    public bool IsTombstoned(NetworkEntityId identity)
+    {
+        EnsureIdentity(identity);
+        return !_bindings.ContainsKey(identity) && _lastRevision.ContainsKey(identity);
+    }
+
+    public void AssertAccess() => EnsureCreatingThread();
+
     public bool TryGetIdentity(TLocal local, out NetworkEntityId identity)
     {
         EnsureCreatingThread();

@@ -10,6 +10,7 @@ namespace FamilyTimeMultiplayer.Core.Transport.Relay;
 public sealed class RelayServer : IDisposable
 {
     public const int MaxRooms = 512;
+    public const int MaxConnections = 128;
     public const int MaxPendingJoinsPerRoom = 8;
     public static readonly TimeSpan HostAnswerTimeout = TimeSpan.FromSeconds(12);
 
@@ -47,6 +48,7 @@ public sealed class RelayServer : IDisposable
     private readonly object _lock = new object();
     private readonly Dictionary<string, Room> _rooms = new Dictionary<string, Room>(StringComparer.Ordinal);
     private readonly Dictionary<string, PendingJoin> _pending = new Dictionary<string, PendingJoin>(StringComparer.Ordinal);
+    private readonly HashSet<TcpClient> _connections = new HashSet<TcpClient>();
     private volatile bool _running = true;
 
     public RelayServer(IPAddress bindAddress, int port, Action<string> log)
@@ -72,6 +74,17 @@ public sealed class RelayServer : IDisposable
         }
     }
 
+    internal int ActiveConnectionCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _connections.Count;
+            }
+        }
+    }
+
     public void Dispose()
     {
         _running = false;
@@ -85,6 +98,10 @@ public sealed class RelayServer : IDisposable
             foreach (PendingJoin join in _pending.Values)
             {
                 join.Client.Close();
+            }
+            foreach (TcpClient connection in _connections)
+            {
+                connection.Close();
             }
             _rooms.Clear();
             _pending.Clear();
@@ -108,13 +125,46 @@ public sealed class RelayServer : IDisposable
             {
                 return;
             }
+            StartConnection(client);
+        }
+    }
+
+    private void StartConnection(TcpClient client)
+    {
+        lock (_lock)
+        {
+            if (!_running || _connections.Count >= MaxConnections)
+            {
+                client.Close();
+                return;
+            }
+            _connections.Add(client);
+        }
+        try
+        {
             new Thread(() => Handle(client)) { IsBackground = true, Name = "FTMPR-Conn" }.Start();
         }
+        catch
+        {
+            ReleaseConnection(client);
+            client.Close();
+            throw;
+        }
+    }
+
+    private void ReleaseConnection(TcpClient client)
+    {
+        lock (_lock)
+        {
+            _connections.Remove(client);
+        }
+        client.Close();
     }
 
     private void Handle(TcpClient client)
     {
         string peer = client.Client.RemoteEndPoint?.ToString() ?? "?";
+        bool connectionTransferred = false;
         try
         {
             client.NoDelay = true;
@@ -132,7 +182,7 @@ public sealed class RelayServer : IDisposable
                     ServeHost(client, stream, peer);
                     break;
                 case "JOIN" when words.Length == 3:
-                    ServeJoin(client, stream, words[2], peer);
+                    connectionTransferred = ServeJoin(client, stream, words[2], peer);
                     break;
                 case "ACCEPT" when words.Length == 5:
                     ServeAccept(client, stream, words[2], words[3], words[4]);
@@ -145,7 +195,13 @@ public sealed class RelayServer : IDisposable
         catch (Exception exception) when (exception is IOException || exception is SocketException || exception is InvalidDataException || exception is ObjectDisposedException)
         {
             _log($"{peer}: {exception.Message}");
-            client.Close();
+        }
+        finally
+        {
+            if (!connectionTransferred)
+            {
+                ReleaseConnection(client);
+            }
         }
     }
 
@@ -168,15 +224,16 @@ public sealed class RelayServer : IDisposable
             room = new Room(code, RoomCode.NewSecret(), control);
             _rooms.Add(code, room);
         }
-        control.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
-        lock (room.ControlWriteLock)
-        {
-            RelayWire.WriteLine(stream, $"ROOM {room.Code} {room.Secret}");
-        }
-        RelayWire.SetHandshakeTimeouts(control, enabled: false);
-        _log($"room {room.Code} opened by {peer}");
+        _log($"room {room.Code} allocated for {peer}");
         try
         {
+            control.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            lock (room.ControlWriteLock)
+            {
+                RelayWire.WriteLine(stream, $"ROOM {room.Code} {room.Secret}");
+            }
+            RelayWire.SetHandshakeTimeouts(control, enabled: false);
+            _log($"room {room.Code} opened by {peer}");
             while (stream.ReadByte() >= 0)
             {
             }
@@ -203,12 +260,12 @@ public sealed class RelayServer : IDisposable
         _log($"room {room.Code} closed");
     }
 
-    private void ServeJoin(TcpClient client, NetworkStream stream, string requestedCode, string peer)
+    private bool ServeJoin(TcpClient client, NetworkStream stream, string requestedCode, string peer)
     {
         if (!RoomCode.TryNormalize(requestedCode, out string code))
         {
             Refuse(client, $"'{requestedCode}' is not a room code");
-            return;
+            return false;
         }
         string ticket = RoomCode.NewSecret();
         PendingJoin join;
@@ -217,12 +274,12 @@ public sealed class RelayServer : IDisposable
             if (!_rooms.TryGetValue(code, out Room room))
             {
                 Refuse(client, $"no room {code} (the host may have stopped)");
-                return;
+                return false;
             }
             if (room.PendingJoins >= MaxPendingJoinsPerRoom)
             {
                 Refuse(client, $"room {code} has too many players joining at once");
-                return;
+                return false;
             }
             room.PendingJoins++;
             join = new PendingJoin(room, client);
@@ -237,10 +294,12 @@ public sealed class RelayServer : IDisposable
             if (!join.Paired.Wait(HostAnswerTimeout))
             {
                 Refuse(client, $"the host of {code} did not answer");
+                return false;
             }
             else
             {
                 _log($"{peer} joined room {code}");
+                return true;
             }
         }
         finally
@@ -281,7 +340,7 @@ public sealed class RelayServer : IDisposable
         Pipe(join.Client, hostSide);
     }
 
-    private static void Pipe(TcpClient a, TcpClient b)
+    private void Pipe(TcpClient a, TcpClient b)
     {
         void Copy(TcpClient from, TcpClient to)
         {
@@ -298,8 +357,15 @@ public sealed class RelayServer : IDisposable
                 b.Close();
             }
         }
-        new Thread(() => Copy(a, b)) { IsBackground = true, Name = "FTMPR-Pipe" }.Start();
-        Copy(b, a);
+        try
+        {
+            new Thread(() => Copy(a, b)) { IsBackground = true, Name = "FTMPR-Pipe" }.Start();
+            Copy(b, a);
+        }
+        finally
+        {
+            ReleaseConnection(a);
+        }
     }
 
     private static void Refuse(TcpClient client, string reason)

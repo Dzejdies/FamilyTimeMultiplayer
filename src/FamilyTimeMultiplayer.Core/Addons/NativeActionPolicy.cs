@@ -20,6 +20,6 @@ public static class NativeActionPolicy
     }
 
     private static bool RequiresPermission(INetMessage message) =>
-        message is CommandIntentMessage or ToolEditsMessage or MamaToggleMessage or BedRequestMessage ||
+        message is CommandIntentMessage or ToolEditsMessage or MamaToggleMessage or BedRequestMessage or GenericActionRequestMessage ||
         message is HoldMessage hold && hold.Phase == HoldPhase.Begin;
 }

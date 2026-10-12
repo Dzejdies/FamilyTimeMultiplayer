@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Transport;
 using FamilyTimeMultiplayer.Core.Transport.Relay;
@@ -10,6 +12,12 @@ namespace FamilyTimeMultiplayer.Core.Tests;
 
 public class RelayTests
 {
+    private const int ConnectionProcessingDelayMilliseconds = 250;
+    private const int ExcessConnectionResponseTimeoutMilliseconds = 3000;
+    private const int ActiveConnectionsAfterJoin = 3;
+    private static readonly TimeSpan RoomRegistrationTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan RoomSetupReleaseTimeout = TimeSpan.FromSeconds(5);
+
     private static T WaitFor<T>(Func<(bool, T)> poll, double seconds = 5)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -91,6 +99,55 @@ public class RelayTests
     }
 
     [Fact]
+    public void KeepsPairedRelayConnectionOpenAfterHandshakeReturns()
+    {
+        using RelayServer relay = StartRelay();
+        using RelayHostListener host = StartHost(relay);
+        (INetConnection server, INetConnection client) = Join(host, relay.Port, host.Code!);
+        System.Threading.Thread.Sleep(ConnectionProcessingDelayMilliseconds);
+        Assert.Equal(ActiveConnectionsAfterJoin, relay.ActiveConnectionCount);
+
+        client.Send(new HelloMessage(ProtocolConstants.Version, "build", "Ola"));
+
+        HelloMessage received = (HelloMessage)WaitFor(() => (server.TryReceive(out INetMessage message), message));
+        Assert.Equal("Ola", received.PlayerName);
+
+        server.Send(new HelloMessage(ProtocolConstants.Version, "build", "Host"));
+
+        HelloMessage returned = (HelloMessage)WaitFor(() => (client.TryReceive(out INetMessage message), message));
+        Assert.Equal("Host", returned.PlayerName);
+    }
+
+    [Fact]
+    public void RefusesConnectionsBeyondTheConcurrentConnectionLimit()
+    {
+        using RelayServer relay = StartRelay();
+        var stalledClients = new TcpClient[RelayServer.MaxConnections];
+        try
+        {
+            for (int index = 0; index < stalledClients.Length; index++)
+            {
+                stalledClients[index] = new TcpClient();
+                stalledClients[index].Connect(IPAddress.Loopback, relay.Port);
+            }
+            WaitFor(() => (relay.ActiveConnectionCount == stalledClients.Length, 0));
+
+            using var excessClient = new TcpClient();
+            excessClient.ReceiveTimeout = ExcessConnectionResponseTimeoutMilliseconds;
+            excessClient.Connect(IPAddress.Loopback, relay.Port);
+
+            Assert.Equal(-1, excessClient.GetStream().ReadByte());
+        }
+        finally
+        {
+            foreach (TcpClient? client in stalledClients)
+            {
+                client?.Dispose();
+            }
+        }
+    }
+
+    [Fact]
     public void TwoPlayersGetSeparateConnections()
     {
         using RelayServer relay = StartRelay();
@@ -112,6 +169,37 @@ public class RelayTests
         WaitFor(() => (pending.IsCompleted, 0));
         Assert.Null(pending.Connection);
         Assert.Contains("no room ABC-DEF", pending.Error);
+    }
+
+    [Fact]
+    public void RemovesRoomWhenHostDisconnectsDuringRoomHandshake()
+    {
+        using var roomAllocated = new ManualResetEventSlim(false);
+        using var continueHandshake = new ManualResetEventSlim(false);
+        using var relay = new RelayServer(IPAddress.Loopback, 0, message =>
+        {
+            if (!message.Contains("allocated", StringComparison.Ordinal)) return;
+            roomAllocated.Set();
+            continueHandshake.Wait(RoomSetupReleaseTimeout);
+        });
+        using (var client = new TcpClient())
+        {
+            client.Connect(IPAddress.Loopback, relay.Port);
+            client.Client.LingerState = new LingerOption(true, 0);
+            byte[] request = System.Text.Encoding.ASCII.GetBytes("FTMPR1 HOST\n");
+            client.GetStream().Write(request, 0, request.Length);
+        }
+
+        try
+        {
+            Assert.True(roomAllocated.Wait(RoomRegistrationTimeout));
+            Assert.Equal(1, relay.RoomCount);
+        }
+        finally
+        {
+            continueHandshake.Set();
+        }
+        WaitFor(() => (relay.RoomCount == 0, 0));
     }
 
     [Fact]

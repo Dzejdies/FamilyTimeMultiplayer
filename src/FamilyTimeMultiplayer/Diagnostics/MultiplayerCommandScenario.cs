@@ -5,6 +5,7 @@ using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Game;
+using FamilyTimeMultiplayer.Holds;
 using FamilyTimeMultiplayer.Sessions;
 using GAT;
 using UnityEngine;
@@ -21,8 +22,13 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
     private double _start = -1;
     private int _next;
     private double _nextProbe;
+    private float _separateWaitStartedAt = -1;
+    private float _familyReadySince = -1;
+    private float _nextReadinessLog;
+    private bool _readinessBlocked;
 
     private readonly bool _singlePlayerControl;
+    private readonly bool _separateFamilies;
 
     public static MultiplayerCommandScenario SinglePlayerControl(ManualLogSource log) => new MultiplayerCommandScenario(log, singlePlayerControl: true);
 
@@ -50,11 +56,12 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
         Client(80, "client DROPOFF log B next to client", _ => ClientDropoff());
     }
 
-    public static MultiplayerCommandScenario SeparateFamilies(ManualLogSource log) => new MultiplayerCommandScenario(log, BuildFamilyTimeline);
+    public static MultiplayerCommandScenario SeparateFamilies(ManualLogSource log) => new MultiplayerCommandScenario(log, BuildFamilyTimeline, separateFamilies: true);
 
-    private MultiplayerCommandScenario(ManualLogSource log, Action<MultiplayerCommandScenario> buildTimeline)
+    private MultiplayerCommandScenario(ManualLogSource log, Action<MultiplayerCommandScenario> buildTimeline, bool separateFamilies = false)
     {
         _log = log;
+        _separateFamilies = separateFamilies;
         buildTimeline(this);
     }
 
@@ -69,7 +76,7 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
         s.Host(28, "host PICKUP log A", _ => s.HostPickup(lowestIndex: true));
         s.Client(31, "client PICKUP log B with own kids (expect accepted)", _ => s.ClientPickup(lowestIndex: false));
         s.Host(40, "grow client family by 2 (diagnostic)", _ => Families.HostFamilyService.Current!.GrowFamily("Client", LocalPlayer.Position, 2));
-        s.Host(43, "host saves the world as ftmp_family_test", _ => World.worldSerializer!.Save("ftmp_family_test", ok => s._log.LogInfo($"[Scenario] save ftmp_family_test: {ok}")));
+        s.Host(43, "report persistence prerequisites", _ => s.ReportPersistenceBlocker());
         s.Client(45, "client goes to bed", _ => Families.ClientNight.GoToBed());
         s.Host(50, "host goes to bed (night should start)", _ => s.HostGoesToBed());
     }
@@ -81,6 +88,21 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
             : throw new InvalidOperationException("No walkable cell 12 m from the client.");
         World.playerController!.TeleportTo(target + Vector3.up, Vector3.forward);
         _log.LogInfo($"[Scenario] client moved to {target}");
+    }
+
+    private void ReportPersistenceBlocker()
+    {
+        Families.HostFamilyService? families = Families.HostFamilyService.Current;
+        string familyState = families == null
+            ? "unavailable"
+            : string.Join(";", MultiplayerController.Current?.Session?.Roster.Select(player =>
+            {
+                string owner = families.TryOwnerOfPlayer(player.PlayerId, out string mapped) ? mapped : "missing";
+                return $"player={player.PlayerId},owner={owner},children={(owner == "missing" ? 0 : families.ChildrenOf(owner))}";
+            }) ?? Array.Empty<string>());
+        string logs = string.Join(";", LogPositions());
+        _log.LogError($"[ScenarioReport] scenario=mp-family phase=persistence verdict=BLOCKED_PRECONDITION reason='timeline has no semantic construction setup and no fresh-process save/load/reconnect orchestrator; native save intentionally not invoked' facts='session={MultiplayerController.Current?.Session?.Status ?? "none"};worldReady={LocalPlayer.IsWorldReady};families={familyState};constructionSemanticIdentity=not-created;changedResourcePositions={logs};nativeSaveCompleted=false;restartLoadReconnect=unavailable'");
+        _readinessBlocked = true;
     }
 
     public static MultiplayerCommandScenario Holding(ManualLogSource log) => new MultiplayerCommandScenario(log, BuildHoldTimeline);
@@ -237,6 +259,14 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
             TickControl(now);
             return;
         }
+        if (_readinessBlocked)
+        {
+            return;
+        }
+        if (_separateFamilies && !TryStartSeparateFamilyScenario(session))
+        {
+            return;
+        }
         if (session == null || !LocalPlayer.IsWorldReady || session.Roster.Count < 2)
         {
             return;
@@ -245,8 +275,13 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
         {
             return;
         }
-        if (session.Role == SessionRole.Host && (HostCommandHub.Current == null || HostCommandHub.Current.FollowerCounts().Count < 2))
+        bool followersMissing = !_separateFamilies && HostCommandHub.Current != null && ScenarioReadiness.RequiresFollowerBootstrap(false, HostCommandHub.Current.FollowerCounts().Count);
+        if (session.Role == SessionRole.Host && (HostCommandHub.Current == null || followersMissing))
         {
+            if (_separateFamilies)
+            {
+                WaitForSeparateFamilyReadiness(session, "host command hub is not initialized");
+            }
             return;
         }
         if (_start < 0)
@@ -266,6 +301,104 @@ public sealed class MultiplayerCommandScenario : ScenarioRunner
             LogPool("probe");
         }
     }
+
+    private bool TryStartSeparateFamilyScenario(ISession? session)
+    {
+        string missing = SeparateFamilyReadiness(session);
+        if (missing.Length == 0)
+        {
+            if (_familyReadySince < 0)
+            {
+                _familyReadySince = Time.realtimeSinceStartup;
+                return false;
+            }
+            if (Time.realtimeSinceStartup - _familyReadySince < 1)
+            {
+                return false;
+            }
+            float readyAt = Time.realtimeSinceStartup;
+            float waited = readyAt - (_separateWaitStartedAt >= 0 ? _separateWaitStartedAt : _familyReadySince);
+            _log.LogInfo($"[ScenarioReport] scenario=mp-family phase=preconditions verdict=READY waitedSeconds={waited:0.0} facts='{SeparateFamilyFacts(session)}'");
+            return true;
+        }
+        WaitForSeparateFamilyReadiness(session, missing);
+        return false;
+    }
+
+    private void WaitForSeparateFamilyReadiness(ISession? session, string missing)
+    {
+        _familyReadySince = -1;
+        float now = Time.realtimeSinceStartup;
+        if (_separateWaitStartedAt < 0)
+        {
+            _separateWaitStartedAt = now;
+            _nextReadinessLog = now;
+        }
+        float elapsed = now - _separateWaitStartedAt;
+        if (ScenarioReadiness.HasTimedOut(elapsed, 90))
+        {
+            _readinessBlocked = true;
+            _log.LogError($"[ScenarioReport] scenario=mp-family phase=preconditions verdict=BLOCKED_PRECONDITION reason='readiness timeout after 90 seconds; missing={missing}' facts='{SeparateFamilyFacts(session)}'");
+            return;
+        }
+        if (now >= _nextReadinessLog)
+        {
+            _nextReadinessLog = now + 10;
+            _log.LogInfo($"[ScenarioReport] scenario=mp-family phase=preconditions verdict=WAITING elapsedSeconds={elapsed:0.0} missing='{missing}' facts='{SeparateFamilyFacts(session)}'");
+        }
+    }
+
+    private string SeparateFamilyReadiness(ISession? session)
+    {
+        var missing = new List<string>();
+        if (session == null || session.Status != "Live") missing.Add("session-live");
+        if (!LocalPlayer.IsWorldReady) missing.Add("world-ready");
+        if (session == null || session.Roster.Count < 2) missing.Add("two-player-roster");
+        if (session?.FamilyMode != FamilyMode.Separate) missing.Add("separate-family-mode");
+        if (session is ClientSession && !ClientCommandBridge.IsActive) missing.Add("client-command-bridge");
+        if (session is HostSession host)
+        {
+            Families.HostFamilyService? families = Families.HostFamilyService.Current;
+            if (families == null)
+            {
+                missing.Add("host-family-registry");
+            }
+            else
+            {
+                if (!families.HasFamily(families.HostOwner) || families.ChildrenOf(families.HostOwner) == 0) missing.Add("host-family-children");
+                if (host.RemotePlayers.Count == 0) missing.Add("live-remote-player");
+                foreach (var player in host.RemotePlayers)
+                {
+                    if (!families.TryOwnerOfPlayer(player.PlayerId, out string owner))
+                    {
+                        missing.Add($"family-owner-player-{player.PlayerId}");
+                        continue;
+                    }
+                    if (!families.HasFamily(owner) || families.ChildrenOf(owner) == 0) missing.Add($"family-children-{owner}");
+                    if (!families.Mamas.TryGetMamaOf(player.PlayerId, out _)) missing.Add($"wolf-mama-{owner}");
+                }
+            }
+            if (MamaLookup.All().Count() < 2) missing.Add("host-and-client-wolf-mamas");
+            if (WolfMama.ActiveInstance == null) missing.Add("host-wolf-mama");
+            if (HostCommandHub.Current == null) missing.Add("host-command-hub");
+        }
+        if (session is ClientSession && Families.LocalFamilyView.PhysicalMembers().Length == 0) missing.Add("client-family-members-mapped");
+        if (session is ClientSession && MamaLookup.All().Count() < 2) missing.Add("client-wolf-mamas-mirrored");
+        return string.Join(",", missing);
+    }
+
+    private string SeparateFamilyFacts(ISession? session)
+    {
+        string families = Families.HostFamilyService.Current is Families.HostFamilyService service
+            ? string.Join(";", session?.Roster.Select(player =>
+            {
+                string owner = service.TryOwnerOfPlayer(player.PlayerId, out string mapped) ? mapped : "missing";
+                return $"player{player.PlayerId}:{owner}:{(owner == "missing" ? 0 : service.ChildrenOf(owner))}";
+            }) ?? Array.Empty<string>())
+            : $"clientMembers={Families.LocalFamilyView.PhysicalMembers().Length}";
+        return $"role={session?.Role.ToString() ?? "none"};session={session?.Status ?? "none"};worldReady={LocalPlayer.IsWorldReady};familyMode={session?.FamilyMode?.ToString() ?? "none"};roster={session?.Roster.Count ?? 0};mamas={MamaLookup.All().Count()};families={families};hostHub={HostCommandHub.Current != null}";
+    }
+
 
     private void TickControl(double now)
     {

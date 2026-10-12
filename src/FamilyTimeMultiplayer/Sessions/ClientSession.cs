@@ -44,6 +44,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private double _retryAt = -1;
     private readonly SnapshotInterpolator<ushort> _interpolator;
     private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
+    private readonly GenericStateReplicationService<object> _genericStates;
+    private readonly HashSet<Guid> _pendingGenericActions = new HashSet<Guid>();
     private readonly ClientRigidRegistry _rigids;
     private RigidIndexMapMessage? _pendingRigidMap;
     private readonly AgentPuppeteer _puppeteer = new AgentPuppeteer();
@@ -71,6 +73,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _target = target;
         _endpointDescription = target.Description;
         _interpolator = new SnapshotInterpolator<ushort>(settings.InterpolationDelaySeconds);
+        _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: false);
         _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds, _entityRegistry);
         _registry = new ReplicatedAgentRegistry(_puppeteer, _entityRegistry);
         _mamas = new Families.ClientMamaMirror(log);
@@ -96,6 +99,23 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     public ushort AvatarStableIndex => _welcome?.AvatarStableIndex ?? ushort.MaxValue;
 
     public AgentIdentityMap Identities => _registry.Identities;
+
+    public void RegisterGenericStateAdapter(IEntityComponentAdapter<object> adapter) =>
+        _genericStates.RegisterAdapter(adapter);
+
+    public IReadOnlyList<GenericStateApplyResult> NotifyGenericEntityAvailable(NetworkEntityId identity) =>
+        _genericStates.OnEntityAvailable(identity);
+
+    public event Action<GenericActionResultMessage>? GenericActionCompleted;
+
+    public Guid RequestGenericAction(string actionId, int schemaVersion, NetworkEntityId? target, ulong lifecycleRevision, byte[] payload)
+    {
+        if (_phase != ClientPhase.Live || _welcome == null || _connection == null) throw new InvalidOperationException("Generic actions require a live session.");
+        var request = new GenericActionRequestMessage(actionId, schemaVersion, Guid.NewGuid(), _welcome.WorldGeneration, target, lifecycleRevision, payload);
+        _pendingGenericActions.Add(request.RequestId);
+        _connection.Send(request);
+        return request.RequestId;
+    }
 
     public int LastPuppetCount => _puppeteer.LastAppliedCount;
 
@@ -242,6 +262,14 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
             case AddonMessage addon:
                 if (_phase == ClientPhase.Live && addon.WorldGeneration == _welcome!.WorldGeneration) _addons!.Receive(PlayerRosterMessage.HostPlayerId, addon);
                 break;
+            case GenericEntityStateMessage state when _phase == ClientPhase.Live:
+                GenericStateApplyResult result = _genericStates.Apply(state);
+                if (result.Status == GenericStateApplyStatus.Rejected || result.Status == GenericStateApplyStatus.ResyncRequired)
+                    throw new InvalidOperationException(result.Error);
+                break;
+            case GenericActionResultMessage actionResult when _phase == ClientPhase.Live:
+                if (_pendingGenericActions.Remove(actionResult.RequestId)) NotifyGenericActionCompleted(actionResult);
+                break;
             case IdentityChallengeMessage challenge when _phase == ClientPhase.AwaitingWelcome && !_identityChallengeReceived:
                 _identityChallengeReceived = true;
                 _connection!.Send(new IdentityProofMessage(_identity.SignHandshake(challenge.Challenge, _identityHello!)));
@@ -296,9 +324,13 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 break;
             case RigidSpawnMessage rigidSpawn when _phase == ClientPhase.Live:
                 _rigids.ApplySpawns(rigidSpawn);
+                foreach (RigidSpawn rigid in rigidSpawn.Spawns)
+                    ApplyPendingGenericState(new NetworkEntityId(_welcome!.WorldGeneration, LegacyRigidIdentityAdapter.Kind, (ulong)rigid.NetId));
                 break;
             case RigidDespawnMessage rigidDespawn when _phase == ClientPhase.Live:
                 _rigids.ApplyDespawns(rigidDespawn);
+                foreach (int netId in rigidDespawn.NetIds)
+                    _genericStates.ForgetEntity(new NetworkEntityId(_welcome!.WorldGeneration, LegacyRigidIdentityAdapter.Kind, (ulong)netId));
                 break;
             case PropChangeMessage props when _phase == ClientPhase.Live:
                 PropReplication.Apply(props);
@@ -349,15 +381,28 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 break;
             case AgentSpawnMessage spawn when _phase == ClientPhase.Live:
                 _registry.ApplySpawns(spawn);
+                foreach (AgentSpawn agent in spawn.Spawns)
+                    ApplyPendingGenericState(new NetworkEntityId(_welcome!.WorldGeneration, LegacyAgentIdentityAdapter.Kind, agent.StableIndex));
                 break;
             case AgentDespawnMessage despawn when _phase == ClientPhase.Live:
                 _registry.ApplyDespawns(despawn, AvatarStableIndex);
+                foreach (ushort stableIndex in despawn.StableIndices)
+                    _genericStates.ForgetEntity(new NetworkEntityId(_welcome!.WorldGeneration, LegacyAgentIdentityAdapter.Kind, stableIndex));
                 break;
             case DayStateMessage day when _phase == ClientPhase.Live:
                 _day.Apply(day);
                 break;
             default:
                 throw new System.IO.InvalidDataException($"Unexpected {message.Type} while {_phase}.");
+        }
+    }
+
+    private void ApplyPendingGenericState(NetworkEntityId identity)
+    {
+        foreach (GenericStateApplyResult result in _genericStates.OnEntityAvailable(identity))
+        {
+            if (result.Status == GenericStateApplyStatus.Rejected || result.Status == GenericStateApplyStatus.ResyncRequired)
+                throw new InvalidOperationException(result.Error);
         }
     }
 
@@ -571,8 +616,17 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _connection!.Send(message);
     }
 
+    private void NotifyGenericActionCompleted(GenericActionResultMessage result)
+    {
+        try { GenericActionCompleted?.Invoke(result); }
+        catch (Exception exception) { _log.LogWarning($"[Client] generic action result callback failed: {exception.Message}"); }
+    }
+
     private void Finish(string reason)
     {
+        foreach (Guid requestId in _pendingGenericActions)
+            NotifyGenericActionCompleted(new GenericActionResultMessage(requestId, GenericActionOutcome.Unknown, "Connection ended before the host acknowledged the action."));
+        _pendingGenericActions.Clear();
         _addons?.Dispose();
         _addons = null;
         _phase = ClientPhase.Finished;

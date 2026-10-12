@@ -1,228 +1,129 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using BepInEx.Logging;
+using FamilyTimeMultiplayer.Commands;
+using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Game;
 using FamilyTimeMultiplayer.Sessions;
 using FamilyTimeMultiplayer.WorldEdits;
 using GAT;
 using UnityEngine;
-using RigidTransform = GAT.RigidTransform;
 
 namespace FamilyTimeMultiplayer.Diagnostics;
 
+/// <summary>Read-only, bounded build preflight. It never fabricates a build or bypasses tool authority.</summary>
 public sealed class BuildScenario : ScenarioRunner
 {
-    private const string LogPrefabName = "rt_log01";
-
+    private const float ReadinessTimeoutSeconds = 90f;
     private readonly ManualLogSource _log;
-    private readonly List<(double At, string Name, bool HostStep, Action Step)> _steps = new List<(double, string, bool, Action)>();
-    private double _start = -1;
-    private int _next;
-    private Vector3Int _origin;
-    private int _template = -1;
-    private double _nextProbe;
+    private float _startedAt = -1;
+    private float _nextReport;
+    private bool _finished;
 
-    public BuildScenario(ManualLogSource log)
-    {
-        _log = log;
-        Add(3, "host creates plan A", true, () => CreatePlan(0));
-        Add(8, "client creates plan B", false, () => CreatePlan(4));
-        Add(13, "client removes plan B", false, () => RemovePlan(4));
-        Add(18, "host builds plan A", true, () => World.buildPlanManager!.CompleteBuildPlan(RequirePlan(0)));
-        Add(24, "client hammers part A away", false, MalletRemove);
-        Add(30, "client digs terrain", false, Dig);
-        Add(36, "client chops a log into existence", false, AxeSpawnLog);
-        Add(44, "client chops the log away", false, AxeDeleteLog);
-        Add(48, "host builds a door", true, BuildDoor);
-        Add(54, "client opens the door", false, UseDoor);
-        Add(60, "client closes the door", false, UseDoor);
-    }
-
-    private void Add(double at, string name, bool host, Action step) => _steps.Add((at, name, host, step));
+    public BuildScenario(ManualLogSource log) => _log = log;
 
     public override void Tick(double now, ISession? session)
     {
-        if (session == null || !LocalPlayer.IsWorldReady || session.Roster.Count < 2)
+        if (_finished) return;
+        float elapsed = _startedAt < 0 ? 0 : Time.realtimeSinceStartup - _startedAt;
+        _startedAt = _startedAt < 0 ? Time.realtimeSinceStartup : _startedAt;
+        string missing = MissingPreconditions(session);
+        if (missing.Length > 0)
         {
+            if (elapsed >= ReadinessTimeoutSeconds) Finish("BLOCKED_PRECONDITION", $"readiness timeout; missing={missing}", session);
+            else if (Time.realtimeSinceStartup >= _nextReport)
+            {
+                _nextReport = Time.realtimeSinceStartup + 10;
+                _log.LogInfo($"[BuildReport] verdict=WAITING elapsed={elapsed:0.0}s missing={missing} {Facts(session)}");
+            }
             return;
         }
-        if (session is ClientSession && !Commands.ClientCommandBridge.IsActive)
-        {
-            return;
-        }
-        if (_start < 0)
-        {
-            _start = now;
-            Vector3 anchor = session.Roster.Count > 0 && session.LocalPlayerId == Core.Protocol.PlayerRosterMessage.HostPlayerId
-                ? LocalPlayer.Position
-                : session.TryGetRemotePlayerPosition(session.Roster.First(r => r.PlayerId == Core.Protocol.PlayerRosterMessage.HostPlayerId), out Vector3 host) ? host : LocalPlayer.Position;
-            _origin = new Vector3Int(Mathf.FloorToInt(anchor.x) + 6, Mathf.FloorToInt(anchor.y), Mathf.FloorToInt(anchor.z) + 6);
-            _origin = new Vector3Int(0, 64, 0);
-            _template = PickTemplate();
-            _log.LogInfo($"[Build] timeline as {session.Role}, origin {_origin}, template {_template} '{World.buildPartManager!.BuildPartTemplates[_template].name}'");
-        }
-        while (_next < _steps.Count && now - _start >= _steps[_next].At)
-        {
-            (double _, string name, bool hostStep, Action step) = _steps[_next++];
-            if (hostStep == (session.Role == SessionRole.Host))
-            {
-                _log.LogInfo($"[Build] step '{name}'");
-                step();
-            }
-        }
-        if (now >= _nextProbe)
-        {
-            _nextProbe = now + 2;
-            Probe();
-        }
+        if (session == null) return;
+
+        InspectPlacement(session);
     }
 
-    private static int PickTemplate()
+    private static string MissingPreconditions(ISession? session)
     {
-        IReadOnlyList<BuildPart> templates = World.buildPartManager!.BuildPartTemplates;
-        for (int i = 0; i < templates.Count; i++)
-        {
-            if (templates[i] != null && templates[i].HasMesh && templates[i].rigidTransformPrefab == null)
-            {
-                return i;
-            }
-        }
-        throw new InvalidOperationException("No mesh build part template without a rigid prefab.");
+        if (session == null || session.Status != "Live") return "live-session";
+        if (!LocalPlayer.IsWorldReady) return "world-ready";
+        if (session.Roster.Count < 2) return "two-player-roster";
+        if (session.Role == SessionRole.Host && HostCommandHub.Current == null) return "host-command-hub";
+        if (session is ClientSession && !Commands.ClientCommandBridge.IsActive) return "client-command-bridge";
+        return string.Empty;
     }
 
-    private Vector3Int GridAt(int offset) => _origin + new Vector3Int(offset, 0, 0);
-
-    private void CreatePlan(int offset)
+    private void InspectPlacement(ISession session)
     {
-        bool created = World.buildPlanManager!.CreateBuildPlan(_template, GridAt(offset), BuildPart.Rotation.R_0, 0.5f);
-        _log.LogInfo($"[Build] CreateBuildPlan at {GridAt(offset)} -> {created}");
-    }
-
-    private BuildPlanManager.BuildPlan RequirePlan(int offset) =>
-        WorldEditRelay.FindPlan(WorldEditRelay.KeyOf(_template, GridAt(offset), BuildPart.Rotation.R_0))
-        ?? throw new InvalidOperationException($"No plan at {GridAt(offset)}.");
-
-    private void RemovePlan(int offset) => World.buildPlanManager!.RemoveBuildPlan(RequirePlan(offset));
-
-    private void MalletRemove()
-    {
-        ToolScope.MalletDepth++;
         try
         {
-            World.buildPartManager!.RemoveBuildPart(_template, GridAt(0), BuildPart.Rotation.R_0);
+            Vector3 hostPosition = GetHostPosition(session);
+            Heightfield terrain = GatInterop.RequireAlive(World.heightfield, "heightfield unavailable");
+            BuildPartManager parts = GatInterop.RequireAlive(World.buildPartManager, "build-part manager unavailable");
+            var templates = parts.BuildPartTemplates;
+            var template = templates.Select((part, index) => (part, index))
+                .FirstOrDefault(entry => entry.part != null && entry.part.HasMesh && !entry.part.hideFromBlueprintTool && entry.part.rigidTransformPrefab == null);
+            bool hasTemplate = template.part != null;
+            BlueprintTool? blueprint = World.playerController?.Tools?.OfType<BlueprintTool>().FirstOrDefault();
+            float reach = World.playerController == null ? -1 : World.playerController.ReachDistance;
+            Vector3Int? candidate = hasTemplate ? FindNearbyFreeCell(hostPosition, parts, terrain) : null;
+            string targetFacts = candidate.HasValue
+                ? DescribeCandidate(candidate.Value, template.part!, template.index, hostPosition, reach, parts, terrain)
+                : "candidate=none";
+            _log.LogInfo($"[BuildReport] verdict=BLOCKED_PRECONDITION reason='preflight has no authorized gameplay input driver; no build request, resource check/consumption, out-of-range rejection, or replication assertion was executed' role={session.Role} hostPosition={hostPosition} controlled={LocalPlayer.PossessedHandle} blueprintTool={blueprint != null} reach={reach:0.0} templates={templates.Count} selectedTemplate={(hasTemplate ? $"{template.index}:{template.part!.name}" : "none")} {targetFacts} authority='HostToolAuthority.Validate preserved'");
         }
-        finally
+        catch (Exception exception)
         {
-            ToolScope.MalletDepth--;
+            Finish("FAIL", $"placement inspection failed: {exception}", session);
         }
+        _finished = true;
     }
 
-    private void Dig()
+    private static Vector3 GetHostPosition(ISession session)
     {
-        Heightfield heightfield = World.heightfield!;
-        int x = _origin.x + 10;
-        int z = _origin.z;
-        byte current = heightfield.GetRawHeight(x, z);
-        heightfield.SetRawHeight(x, z, (byte)Math.Max(0, current - 3));
-        _log.LogInfo($"[Build] dig ({x},{z}) {current} -> {current - 3}");
+        if (session.Role == SessionRole.Host) return LocalPlayer.Position;
+        var host = session.Roster.FirstOrDefault(player => player.PlayerId == PlayerRosterMessage.HostPlayerId);
+        return session.TryGetRemotePlayerPosition(host, out Vector3 position) ? position : LocalPlayer.Position;
     }
 
-    private void AxeSpawnLog()
+    private static Vector3Int? FindNearbyFreeCell(Vector3 origin, BuildPartManager parts, Heightfield terrain)
     {
-        RigidTransformManager manager = HostRigidRegistry.RequireManager();
-        RigidPrefab prefab = Enumerable.Range(0, manager.PrefabCount)
-            .Select(i => RigidTransformApi.TryGetPrefab(manager, i, out RigidPrefab p) ? p : null)
-            .First(p => p != null && RigidTransformApi.PrefabName(p) == LogPrefabName)!;
-        ToolScope.AxeDepth++;
-        try
+        int x = Mathf.RoundToInt(origin.x);
+        int z = Mathf.RoundToInt(origin.z);
+        for (int radius = 0; radius <= 8; radius++)
+        for (int dx = -radius; dx <= radius; dx++)
+        for (int dz = -radius; dz <= radius; dz++)
         {
-            RigidTransformApi.Spawn(manager, prefab, (Vector3)_origin + new Vector3(0f, 3f, 8f), Quaternion.identity);
+            if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != radius) continue;
+            int cellX = x + dx;
+            int cellZ = z + dz;
+            if (!InBounds(terrain, cellX, cellZ)) continue;
+            Vector3Int cell = new Vector3Int(cellX, terrain.GetRawHeight(cellX, cellZ), cellZ);
+            if (!parts.TryGetBuildPart(cell, BuildPart.Rotation.R_0, out _)) return cell;
         }
-        finally
-        {
-            ToolScope.AxeDepth--;
-        }
+        return null;
     }
 
-    private RigidTransform? LogNearOrigin()
+    private static string DescribeCandidate(Vector3Int cell, BuildPart template, int templateIndex, Vector3 hostPosition, float reach, BuildPartManager parts, Heightfield terrain)
     {
-        RigidTransformManager manager = HostRigidRegistry.RequireManager();
-        Vector3 at = (Vector3)_origin + new Vector3(0f, 3f, 8f);
-        return Enumerable.Range(0, RigidTransformApi.Count(manager))
-            .Select(i => RigidTransformApi.TryGetManagedRigid(manager, i, out RigidTransform r) ? r : null)
-            .Where(r => r != null && RigidTransformApi.IsAlive(r) && RigidTransformApi.Name(r).StartsWith(LogPrefabName) && Vector3.Distance(r.position, at) < 6f)
-            .FirstOrDefault();
+        Vector3 point = template.GetPlacementMatrix(cell, BuildPart.Rotation.R_0).GetColumn(3);
+        float extent = template.GetCombinedMeshBounds().extents.magnitude;
+        float distance = Vector3.Distance(hostPosition, point);
+        bool inRange = reach >= 0 && distance <= reach + extent + 3;
+        bool occupied = parts.TryGetBuildPart(cell, BuildPart.Rotation.R_0, out _);
+        byte rawHeight = terrain.GetRawHeight(cell.x, cell.z);
+        return $"candidate={cell} template={templateIndex}:{template.name} worldPoint={point} distance={distance:0.00} extent={extent:0.00} hostReach={reach:0.00} rangeCheck={inRange} occupied={occupied} rawHeight={rawHeight} terrainY={rawHeight * 0.5f:0.00} materials=not-validated";
     }
 
-    private void AxeDeleteLog()
-    {
-        RigidTransform log = LogNearOrigin() ?? throw new InvalidOperationException("The chopped log never arrived on the client.");
-        ToolScope.AxeDepth++;
-        try
-        {
-            HostRigidRegistry.RequireManager().Delete(log);
-        }
-        finally
-        {
-            ToolScope.AxeDepth--;
-        }
-    }
+    private static bool InBounds(Heightfield terrain, int x, int z) =>
+        x >= -2048 && z >= -2048 && (long)x + 2048 < terrain.MapWidth && (long)z + 2048 < terrain.MapDepth;
 
-    private int DoorTemplate()
-    {
-        IReadOnlyList<BuildPart> templates = World.buildPartManager!.BuildPartTemplates;
-        for (int i = 0; i < templates.Count; i++)
-        {
-            if (templates[i] != null && templates[i].logicManager == LogicManagerEnum.DOOR)
-            {
-                return i;
-            }
-        }
-        throw new InvalidOperationException("No door build part template.");
-    }
+    private static string Facts(ISession? session) =>
+        $"role={session?.Role.ToString() ?? "none"} session={session?.Status ?? "none"} worldReady={LocalPlayer.IsWorldReady} roster={session?.Roster.Count ?? 0} position={LocalPlayer.Position} controlled={LocalPlayer.PossessedHandle}";
 
-    private Vector3Int DoorGrid => GridAt(16);
-
-    private void BuildDoor()
+    private void Finish(string verdict, string reason, ISession? session)
     {
-        World.buildPartManager!.CreateBuildPart(DoorTemplate(), DoorGrid, BuildPart.Rotation.R_0);
-        _log.LogInfo($"[Build] door template {DoorTemplate()} '{World.buildPartManager.BuildPartTemplates[DoorTemplate()].name}' at {DoorGrid}");
-    }
-
-    private void UseDoor()
-    {
-        string? part = PartAt(DoorGrid);
-        BuildPartManager parts = World.buildPartManager!;
-        int template = Enumerable.Range(0, parts.BuildPartTemplates.Count).First(i => parts.BuildPartTemplates[i]?.name == part);
-        LogicData data = WorldEditRelay.FindLogicData(WorldEditRelay.KeyOf(template, DoorGrid, BuildPart.Rotation.R_0))
-            ?? throw new InvalidOperationException($"No usable part at {DoorGrid} ('{part}').");
-        parts.Interact(data);
-    }
-
-    private static string? PartAt(Vector3Int grid)
-    {
-        BuildPartManager parts = World.buildPartManager!;
-        for (int i = 0; i < parts.BuildPartTemplates.Count; i++)
-        {
-            if (parts.BuildPartTemplates[i] != null && WorldEditRelay.FindLogicData(WorldEditRelay.KeyOf(i, grid, BuildPart.Rotation.R_0)) != null)
-            {
-                return parts.BuildPartTemplates[i].name;
-            }
-        }
-        return parts.TryGetBuildPart(grid, BuildPart.Rotation.R_0, out BuildPart part) ? part.name : null;
-    }
-
-    private void Probe()
-    {
-        if (_template < 0)
-        {
-            return;
-        }
-        bool planA = WorldEditRelay.FindPlan(WorldEditRelay.KeyOf(_template, GridAt(0), BuildPart.Rotation.R_0)) != null;
-        bool planB = WorldEditRelay.FindPlan(WorldEditRelay.KeyOf(_template, GridAt(4), BuildPart.Rotation.R_0)) != null;
-        bool partA = World.buildPartManager!.TryGetBuildPart(GridAt(0), BuildPart.Rotation.R_0, out _);
-        byte height = World.heightfield!.GetRawHeight(_origin.x + 10, _origin.z);
-        _log.LogInfo($"[Check] planA={planA} planB={planB} partA={partA} height={height} logNearOrigin={LogNearOrigin() != null} door='{PartAt(DoorGrid)}'");
+        _finished = true;
+        _log.LogError($"[BuildReport] verdict={verdict} reason='{reason}' {Facts(session)}");
     }
 }

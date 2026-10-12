@@ -189,17 +189,19 @@ public sealed class CommandAudioScenario : ScenarioRunner
         }
     }
 
-    [HarmonyPatch(typeof(GATSoundManager), "PlayAudioGroupAt")]
-    private static class PlaybackProbe
+    internal static void ObservePlayback(bool __result, AudioGroup audioGroup, bool cameraSound)
     {
-        private static void Postfix(bool __result, AudioGroup audioGroup, bool cameraSound)
+        if (__result && cameraSound && audioGroup != null && Active != null)
         {
-            if (__result && cameraSound && audioGroup != null && Active != null)
-            {
-                Active._played.TryGetValue(audioGroup, out int previous);
-                Active._played[audioGroup] = previous + 1;
-                Active._log.LogInfo($"[AudioTest] source played '{audioGroup.name}'");
-            }
+            Active._played.TryGetValue(audioGroup, out int previous);
+            Active._played[audioGroup] = previous + 1;
+            Active._log.LogInfo($"[AudioTest] source played '{audioGroup.name}'");
         }
+    }
+
+    public override void Dispose()
+    {
+        if (ReferenceEquals(Active, this)) Active = null;
+        base.Dispose();
     }
 }

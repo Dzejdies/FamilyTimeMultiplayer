@@ -34,6 +34,7 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
     private bool _launchMapPending;
     private bool _launchMapBusy;
     private bool _gameRunsInBackground;
+    private bool _capturedBackgroundState;
 
     public static MultiplayerController? Current { get; private set; }
 
@@ -66,8 +67,9 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
         _avatars = new RemoteAvatarPresenter(log);
         _launchActionPending = launch.Action != LaunchAction.None;
         _launchMapPending = launch.LoadMap != null || launch.SaveMap != null;
-        if (launch.Action != LaunchAction.None && !_launchMapPending) SelectSaveCollection(SaveCollection.Multiplayer);
+        if (launch.UsesMultiplayerSaveCollection) SelectSaveCollection(SaveCollection.Multiplayer);
         _gameRunsInBackground = FamilyTimeMultiplayer.Game.GameApiCompatibility.RunInBackground;
+        _capturedBackgroundState = true;
         if (launch.RelayAddress != null)
         {
             settings.OverrideRelayForThisRun(launch.RelayAddress);
@@ -545,13 +547,45 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
 
     private void OnDestroy()
     {
-        Leave();
-        _hud?.Dispose();
+        TryCleanup("session", Leave);
+        TryCleanup("startup stage", _stage.Exit);
+        TryCleanup("startup gate", StartupGate.Release);
+        TryCleanup("startup pause scope", Patches.WorldGenerationGatePatch.ReleasePendingPauseScope);
+        TryCleanup("diagnostic scenario", () => _scenario?.Dispose());
+        if (_capturedBackgroundState)
+        {
+            TryCleanup("background execution state", () => FamilyTimeMultiplayer.Game.GameApiCompatibility.RunInBackground = _gameRunsInBackground);
+        }
+        TryCleanup("HUD", () => _hud?.Dispose());
+        _scenario = null;
         if (Current == this)
         {
             Current = null;
         }
     }
 
-    private void OnApplicationQuit() => Leave();
+    private void OnApplicationQuit()
+    {
+        TryCleanup("session", Leave);
+        TryCleanup("startup stage", _stage.Exit);
+        TryCleanup("startup gate", StartupGate.Release);
+        TryCleanup("startup pause scope", Patches.WorldGenerationGatePatch.ReleasePendingPauseScope);
+        TryCleanup("diagnostic scenario", () => _scenario?.Dispose());
+        if (_capturedBackgroundState)
+        {
+            TryCleanup("background execution state", () => FamilyTimeMultiplayer.Game.GameApiCompatibility.RunInBackground = _gameRunsInBackground);
+        }
+    }
+
+    private void TryCleanup(string owner, Action cleanup)
+    {
+        try
+        {
+            cleanup();
+        }
+        catch (Exception exception)
+        {
+            _log?.LogError($"[Cleanup] {owner} cleanup failed: {exception}");
+        }
+    }
 }

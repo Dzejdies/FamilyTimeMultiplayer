@@ -8,6 +8,7 @@ using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Replication;
+using FamilyTimeMultiplayer.Core.Safety;
 using FamilyTimeMultiplayer.Core.Transport;
 using FamilyTimeMultiplayer.Core.Transport.Relay;
 using FamilyTimeMultiplayer.Families;
@@ -86,6 +87,9 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     private readonly RemoteAvatarService _avatars = new RemoteAvatarService();
     private readonly DayStateBridge _day = new DayStateBridge();
     private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
+    private readonly GenericStateReplicationService<object> _genericStates;
+    private readonly GenericActionBridge<object> _genericActions;
+    private readonly GenericActionSessionEndpoint<object> _genericActionEndpoint;
     private readonly LegacyAgentIdentityAdapter _agentEntities;
     private readonly HostRigidRegistry _rigids;
     private readonly HostCommandHub _commands;
@@ -118,6 +122,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     public HostSession(ManualLogSource log, MultiplayerSettings settings, ICoroutineHost coroutines, FamilyMode familyMode)
     {
         _agentEntities = new LegacyAgentIdentityAdapter(_entityRegistry);
+        _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: true);
         _rigids = new HostRigidRegistry(_entityRegistry);
         _familyMode = familyMode;
         _log = log;
@@ -141,6 +146,8 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
             _rigids.AdoptCurrentWorld();
             AdoptCurrentAgents();
             _commands = new HostCommandHub(log);
+            _genericActions = new GenericActionBridge<object>(_entityRegistry, (playerId, callback) => _commands.RunAsPlayer(playerId, callback));
+            _genericActionEndpoint = new GenericActionSessionEndpoint<object>(_genericActions);
             if (familyMode == Core.Protocol.FamilyMode.Separate)
             {
                 HostFamilyService.EnsureStarted(log, _hostName);
@@ -240,6 +247,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         IReadOnlyList<int> destroyedRigids = _rigids.CollectDestroyed();
         if (destroyedRigids.Count > 0)
         {
+            foreach (int netId in destroyedRigids) ForgetGenericEntityState(LegacyRigidIdentityAdapter.Kind, (ulong)netId);
             SendWorldEvent(new RigidDespawnMessage(destroyedRigids));
         }
         foreach (WorldEditMessage edits in WorldEdits.WorldEditRelay.TakeHostBatches())
@@ -280,11 +288,33 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         SendWorldEvent(new AgentSpawnMessage(spawns));
     }
 
+    public void RegisterGenericStateAdapter(IEntityComponentAdapter<object> adapter) =>
+        _genericStates.RegisterAdapter(adapter);
+
+    public void RegisterGenericAction(IGenericActionAdapter<object> adapter) => _genericActions.Register(adapter);
+
+    public bool PublishGenericState(NetworkEntityId identity, object localEntity, string adapterId)
+    {
+        GenericEntityStateMessage? message = _genericStates.Publish(identity, localEntity, adapterId);
+        if (message == null) return false;
+        SendWorldEvent(message);
+        return true;
+    }
+
+    public void ForgetGenericEntityState(NetworkEntityId identity) => _genericStates.ForgetEntity(identity);
+
+    private void ForgetGenericEntityState(EntityKind kind, ulong networkId) =>
+        ForgetGenericEntityState(new NetworkEntityId(_entityRegistry.WorldGeneration, kind, networkId));
+
     public void OnAgentsDeleted(IReadOnlyList<Handle> handles)
     {
         foreach (Handle handle in handles)
         {
-            if (!handle.isNull) _agentEntities.Unbind(handle.stableIndex);
+            if (!handle.isNull)
+            {
+                _agentEntities.Unbind(handle.stableIndex);
+                ForgetGenericEntityState(LegacyAgentIdentityAdapter.Kind, handle.stableIndex);
+            }
         }
         if (!_peers.Any(ReceivesWorldEvents))
         {
@@ -303,6 +333,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         if (_rigids.TryUnregister(rigid, out int netId))
         {
+            ForgetGenericEntityState(LegacyRigidIdentityAdapter.Kind, (ulong)netId);
             SendWorldEvent(new RigidDespawnMessage(new[] { netId }));
         }
     }
@@ -567,6 +598,14 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                     break;
                 case AddonMessage _:
                     break;
+                case GenericEntityStateMessage:
+                    Reject(peer, "Only the host may publish authoritative component state.");
+                    break;
+                case GenericActionRequestMessage action when peer.Phase == PeerPhase.Live:
+                    GenericActionResultMessage actionResult = _genericActionEndpoint.Receive(
+                        new AuthenticatedActionPeer(peer.PlayerId, peer.Owner, peer.Authenticated, peer.Phase == PeerPhase.Live), action);
+                    if (peer.Connection.IsOpen) peer.Connection.Send(actionResult);
+                    break;
                 case ClientPoseMessage pose when peer.Phase == PeerPhase.Live:
                     if (_addons.TryPose(peer.PlayerId, out ClientPoseMessage addonPose))
                     {
@@ -575,11 +614,18 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                         _commands.UpdatePose(peer.PlayerId, addonPose);
                         break;
                     }
-                    HostPlayerAuthority.AcceptPose(peer.PlayerId, pose);
-                    _avatars.ApplyPose(peer.Avatar, pose);
-                    _commands.UpdatePose(peer.PlayerId, pose);
-                    peer.LastPosition = GatInterop.ToUnity(pose.Position);
-                    peer.LastYawDegrees = pose.YawDegrees;
+                    if (!HostPlayerAuthority.TryAcceptPose(peer.PlayerId, pose, out MotionPoseAssessment motion))
+                    {
+                        LogMovementRejection(peer, pose, motion);
+                        throw new InvalidDataException($"Client movement rejected: {motion.Rejection}; position={pose.Position}, velocity={pose.Velocity}.");
+                    }
+                    if (motion.HorizontalSpeed > motion.HorizontalSpeedLimit)
+                        LogMovementSanitization(peer, pose, motion);
+                    ClientPoseMessage authorizedPose = HostPlayerAuthority.RequirePose(peer.PlayerId);
+                    _avatars.ApplyPose(peer.Avatar, authorizedPose);
+                    _commands.UpdatePose(peer.PlayerId, authorizedPose);
+                    peer.LastPosition = GatInterop.ToUnity(authorizedPose.Position);
+                    peer.LastYawDegrees = authorizedPose.YawDegrees;
                     break;
                 case ClientReadyMessage ready when ready.TransferId < peer.TransferId:
                     break;
@@ -637,9 +683,54 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         }
     }
 
+    private void LogMovementRejection(Peer peer, ClientPoseMessage pose, MotionPoseAssessment diagnostics)
+    {
+        LogMovementDiagnostic("MovementReject", peer, pose, diagnostics, rejected: true);
+    }
+
+    private void LogMovementSanitization(Peer peer, ClientPoseMessage pose, MotionPoseAssessment diagnostics)
+    {
+        LogMovementDiagnostic("MovementSanitized", peer, pose, diagnostics, rejected: false);
+    }
+
+    private void LogMovementDiagnostic(string eventName, Peer peer, ClientPoseMessage pose, MotionPoseAssessment diagnostics, bool rejected)
+    {
+        MotionMoveDiagnostics movement = diagnostics.Movement;
+        float displacementSpeed = movement.ElapsedSeconds > 0
+            ? movement.HorizontalDistance / (float)movement.ElapsedSeconds
+            : float.PositiveInfinity;
+        NetVector3 authorizedVelocity = movement.GetAuthorizedVelocity(diagnostics.HorizontalSpeedLimit);
+        bool avatarValid = World.gat != null && World.gat.IsHandleValid(peer.Avatar);
+        string avatarPosition = avatarValid
+            ? World.gat!.GetInstanceMatrixImmediate(peer.Avatar)?.GetColumn(3).ToString() ?? "unavailable"
+            : "invalid-handle";
+        WorldSerializer? serializer = World.worldSerializer;
+        string identity = Core.Security.PlayerIdentity.Fingerprint(peer.PublicKey);
+
+        string diagnostic =
+            $"[{eventName}] playerId={peer.PlayerId} name='{peer.Name}' identity={identity} family='{peer.Owner}' " +
+            $"authenticated={peer.Authenticated} phase={peer.Phase} transfer={peer.TransferId} avatar={peer.Avatar} " +
+            $"authoritative={movement.Origin} received={pose.Position} reportedVelocity={pose.Velocity} authorizedVelocity={authorizedVelocity} " +
+            $"elapsed={movement.ElapsedSeconds:0.000000}s planarDistance={movement.HorizontalDistance:0.00} " +
+            $"computedPlanarSpeed={displacementSpeed:0.00} reportedPlanarSpeed={diagnostics.HorizontalSpeed:0.00} " +
+            $"speedLimit={diagnostics.HorizontalSpeedLimit:0.00} planarAllowance={movement.HorizontalAllowance:0.00} " +
+            $"verticalDelta={movement.VerticalDistance:0.00} verticalAllowance={movement.VerticalAllowance:0.00} " +
+            $"reason={(rejected ? diagnostics.Rejection.ToString() : "reported-velocity-capped-to-host-measured-movement")} " +
+            $"budgetReason={movement.Rejection} context={{worldReady={LocalPlayer.IsWorldReady}, loading={serializer?.isLoadingInProgress}, " +
+            $"worldBusy={serializer?.IsBusy}, provisioning={_provisioningActive}, buildManager={World.buildPlanManager != null}, " +
+            $"avatarPosition={avatarPosition}, gameTime={GameClock.Now:0.000000}}}";
+        if (rejected) _log.LogWarning(diagnostic);
+        else _log.LogInfo(diagnostic);
+    }
+
     private void RefuseAddonRestrictedAction(Peer peer, INetMessage message)
     {
         const string detail = "This action is unavailable while a multiplayer addon controls your character.";
+        if (message is GenericActionRequestMessage action)
+        {
+            peer.Connection.Send(new GenericActionResultMessage(action.RequestId, GenericActionOutcome.Rejected, detail));
+            return;
+        }
         if (message is HoldMessage hold)
         {
             peer.Connection.Send(new HoldResultMessage(hold.Target, false, detail));
@@ -651,7 +742,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
 
     private void HandleHello(Peer peer, HelloMessage hello)
     {
-        if (hello.ProtocolVersion != ProtocolConstants.Version)
+        if (!ProtocolConstants.IsCompatibleVersion(hello.ProtocolVersion))
         {
             Reject(peer, $"Mod version mismatch: host speaks protocol {ProtocolConstants.Version}, you speak {hello.ProtocolVersion}.");
             return;
@@ -739,6 +830,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         List<INetMessage> backlog = peer.Backlog ?? new List<INetMessage>();
         peer.Backlog = null;
+        foreach (GenericEntityStateMessage state in _genericStates.CaptureSnapshot()) peer.Connection.Send(state);
         foreach (INetMessage message in backlog)
         {
             peer.Connection.Send(message);

@@ -33,5 +33,6 @@ public interface IEntityComponentAdapter<TLocal>
 {
     EntityComponentAdapterDescriptor Descriptor { get; }
     byte[] Capture(TLocal entity);
+    bool TryValidate(ReadOnlyMemory<byte> state, out string error);
     void Apply(TLocal entity, int schemaVersion, ReadOnlyMemory<byte> state);
 }

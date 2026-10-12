@@ -1,19 +1,28 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using BepInEx.Logging;
+using HarmonyLib;
 using FamilyTimeMultiplayer.Core.Saves;
 using FamilyTimeMultiplayer.Game;
 using FamilyTimeMultiplayer.Sessions;
 using GAT;
-using HarmonyLib;
 using UnityEngine;
 
 namespace FamilyTimeMultiplayer.Diagnostics;
 
 public abstract class ScenarioRunner
 {
+    private Harmony? _diagnosticHarmony;
+
     public abstract void Tick(double now, ISession? session);
+
+    public virtual void Dispose()
+    {
+        _diagnosticHarmony?.UnpatchSelf();
+        _diagnosticHarmony = null;
+    }
 
     protected static bool HasLivePair(ISession? session) =>
         session != null && LocalPlayer.IsWorldReady && session.Roster.Count >= 2 &&
@@ -21,7 +30,7 @@ public abstract class ScenarioRunner
 
     public static ScenarioRunner Create(string name, ManualLogSource log)
     {
-        return name switch
+        ScenarioRunner scenario = name switch
         {
             "idle" => new IdleScenario(),
             "walk-circle" => new WalkCircleScenario(log),
@@ -32,6 +41,7 @@ public abstract class ScenarioRunner
             "mp-family" => MultiplayerCommandScenario.SeparateFamilies(log),
             "mp-hold" => MultiplayerCommandScenario.Holding(log),
             "mp-build" => new BuildScenario(log),
+            "mp-generic-bridge" => new GenericBridgeRuntimeScenario(log),
             "mp-security" => new SecurityScenario(log),
             "mp-water" => new WaterScenario(log),
             "mp-transfer" => new TransferScenario(log),
@@ -50,6 +60,29 @@ public abstract class ScenarioRunner
             "mama-probe" => new MamaProbeScenario(log),
             _ => throw new ArgumentException($"Unknown -ftmp-scenario '{name}'. Known: idle, walk-circle, watch-peer, follow-walk, mp-commands, sp-pickup, mp-family, menu-shot."),
         };
+        scenario.InstallDiagnosticPatches(name);
+        return scenario;
+    }
+
+    private void InstallDiagnosticPatches(string scenario)
+    {
+        IReadOnlyList<DiagnosticProbe> probes = ScenarioDiagnosticPatchPlan.ForScenario(scenario);
+        if (probes.Count == 0) return;
+
+        var harmony = new Harmony($"{Plugin.Guid}.diagnostic.{scenario}.{Guid.NewGuid():N}");
+        try
+        {
+            foreach (DiagnosticProbe probe in probes)
+            {
+                ScenarioDiagnosticPatchInstaller.Install(harmony, probe);
+            }
+            _diagnosticHarmony = harmony;
+        }
+        catch
+        {
+            harmony.UnpatchSelf();
+            throw;
+        }
     }
 
     private sealed class IdleScenario : ScenarioRunner
@@ -78,6 +111,14 @@ public abstract class ScenarioRunner
             _world.Tick(now, session);
             _visuals.Tick(now, session);
         }
+
+        public override void Dispose()
+        {
+            _despawns.Dispose();
+            _world.Dispose();
+            _visuals.Dispose();
+            base.Dispose();
+        }
     }
 
     private sealed class AudioWeatherScenario : ScenarioRunner
@@ -95,6 +136,13 @@ public abstract class ScenarioRunner
         {
             _weather.Tick(now, session);
             _audio.Tick(now, session);
+        }
+
+        public override void Dispose()
+        {
+            _weather.Dispose();
+            _audio.Dispose();
+            base.Dispose();
         }
     }
 

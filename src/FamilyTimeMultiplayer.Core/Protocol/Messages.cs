@@ -49,6 +49,9 @@ public enum MessageType : byte
     FamilyApprovalPending = 40,
     SignedClient = 41,
     Addon = 42,
+    GenericEntityState = 43,
+    GenericActionRequest = 44,
+    GenericActionResult = 45,
 }
 
 public interface INetMessage

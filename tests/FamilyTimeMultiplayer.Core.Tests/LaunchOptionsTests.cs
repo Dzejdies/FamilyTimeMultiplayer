@@ -22,6 +22,14 @@ public class LaunchOptionsTests
     }
 
     [Fact]
+    public void HostLoadingSavedWorldUsesMultiplayerCollection()
+    {
+        LaunchOptions options = LaunchOptions.Parse(new[] { "-ftmp-host", "27996", "-ftmp-load", "family" });
+
+        Assert.True(options.UsesMultiplayerSaveCollection);
+    }
+
+    [Fact]
     public void IgnoresUnrelatedArguments() =>
         Assert.Equal(LaunchAction.None, LaunchOptions.Parse(new[] { "-screen-width", "1280" }).Action);
 

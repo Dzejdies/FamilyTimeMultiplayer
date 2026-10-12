@@ -223,12 +223,14 @@ public sealed class CommandMarkerScenario : ScenarioRunner
     private Vector3 Position(CommandVisuals.HudKind kind) => _drawn.TryGetValue(kind, out var draw) ? draw.Position : Vector3.zero;
     private void Check(string name, bool pass, string detail) => _log.LogInfo($"[MarkerTest] {(pass ? "PASS" : "FAIL")} {name} {detail}");
 
-    [HarmonyPatch(typeof(CommandVisuals), nameof(CommandVisuals.DrawHud), typeof(CommandVisuals.HudKind), typeof(Vector3))]
-    private static class DrawProbe
+    internal static void ObserveDraw(CommandVisuals.HudKind kind, Vector3 position)
     {
-        private static void Postfix(CommandVisuals.HudKind kind, Vector3 position)
-        {
-            if (_active != null) _active._drawn[kind] = (FamilyTimeMultiplayer.Game.GameClock.Now, position);
-        }
+        if (_active != null) _active._drawn[kind] = (FamilyTimeMultiplayer.Game.GameClock.Now, position);
+    }
+
+    public override void Dispose()
+    {
+        if (ReferenceEquals(_active, this)) _active = null;
+        base.Dispose();
     }
 }

@@ -7,6 +7,7 @@ namespace FamilyTimeMultiplayer;
 
 public sealed class MultiplayerSettings
 {
+    private const int CurrentMenuKeyLayout = 1;
     private MultiplayerSettings(
         ConfigEntry<string> playerName,
         ConfigEntry<int> port,
@@ -63,6 +64,10 @@ public sealed class MultiplayerSettings
 
     public static MultiplayerSettings Bind(ConfigFile config)
     {
+        ConfigEntry<Key> menuKey = config.Bind("UI", "ToggleWindowKey", Key.F9,
+            "Key that opens the Multiplayer page of the pause book.");
+        MigrateMenuKey(config, menuKey);
+
         return new MultiplayerSettings(
             config.Bind("Player", "Name", "Player", "Name shown to other players."),
             config.Bind("Network", "Port", ProtocolConstants.DefaultPort,
@@ -76,9 +81,20 @@ public sealed class MultiplayerSettings
                 new ConfigDescription("How often a client sends its own position.", new AcceptableValueRange<int>(1, 60))),
             config.Bind("Sync", "InterpolationDelayMs", 120,
                 new ConfigDescription("Client render delay behind the host, smooths out jitter.", new AcceptableValueRange<int>(0, 1000))),
-            config.Bind("UI", "ToggleWindowKey", Key.F8, "Key that opens the Multiplayer page of the pause book."),
+            menuKey,
             config.Bind("Session", "FamilyMode", FamilyMode.Shared, "Shared: one family, kids shared by all players. Separate: every player gets their own mama and kids."),
             config.Bind("UI", "ShowMenuOnStartup", true, "Open the Multiplayer page when the game starts so you can pick Solo, Host or Join."),
             config.Bind("Network", "RelayAddress", "92.5.59.1:27780", "Relay server (host or host:port, default port 27780). When set, hosting also opens a room code that friends can join without port forwarding. Empty = off."));
+    }
+
+    private static void MigrateMenuKey(ConfigFile config, ConfigEntry<Key> menuKey)
+    {
+        ConfigEntry<int> layout = config.Bind("UI", "MenuKeyLayoutVersion", 0,
+            "Multiplayer menu key migration version.");
+        if (layout.Value >= CurrentMenuKeyLayout) return;
+
+        if (menuKey.Value == Key.F8) menuKey.Value = Key.F9;
+        layout.Value = CurrentMenuKeyLayout;
+        config.Save();
     }
 }

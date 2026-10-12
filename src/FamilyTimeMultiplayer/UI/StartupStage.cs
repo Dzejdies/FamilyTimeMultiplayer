@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using GAT;
 using UnityEngine;
@@ -13,6 +14,9 @@ public sealed class StartupStage
     private CameraClearFlags _clearFlags;
     private Color _background;
     private int _cullingMask;
+    private const CameraClearFlags AppliedClearFlags = CameraClearFlags.SolidColor;
+    private Color _appliedBackground;
+    private int _appliedCullingMask;
     private bool _active;
 
     public void Enter(PauseMenuBook book)
@@ -31,11 +35,21 @@ public sealed class StartupStage
         _clearFlags = camera.clearFlags;
         _background = camera.backgroundColor;
         _cullingMask = camera.cullingMask;
-        camera.clearFlags = CameraClearFlags.SolidColor;
-        camera.backgroundColor = Color.black;
-        camera.cullingMask = LayerMaskOf(book.gameObject);
-        HideHudCanvases(book);
-        DisableWorldEffects();
+        _appliedBackground = Color.black;
+        _appliedCullingMask = LayerMaskOf(book.gameObject);
+        try
+        {
+            camera.clearFlags = AppliedClearFlags;
+            camera.backgroundColor = _appliedBackground;
+            camera.cullingMask = _appliedCullingMask;
+            HideHudCanvases(book);
+            DisableWorldEffects();
+        }
+        catch
+        {
+            Exit();
+            throw;
+        }
     }
 
     private void DisableWorldEffects()
@@ -54,34 +68,59 @@ public sealed class StartupStage
         {
             return;
         }
+        Exception? restoreError = null;
         _active = false;
-        if (_camera != null)
+        try
         {
-            _camera.clearFlags = _clearFlags;
-            _camera.backgroundColor = _background;
-            _camera.cullingMask = _cullingMask;
+            if (_camera != null)
+            {
+                AttemptRestore(() => RestoreIfOwned(_camera.clearFlags, AppliedClearFlags, value => _camera.clearFlags = value, _clearFlags), ref restoreError);
+                AttemptRestore(() => RestoreIfOwned(_camera.backgroundColor, _appliedBackground, value => _camera.backgroundColor = value, _background), ref restoreError);
+                AttemptRestore(() => RestoreIfOwned(_camera.cullingMask, _appliedCullingMask, value => _camera.cullingMask = value, _cullingMask), ref restoreError);
+            }
+            RestoreCanvasesAndEffects(ref restoreError);
         }
+        finally
+        {
+            _camera = null;
+            _hiddenCanvases.Clear();
+            _disabledEffects.Clear();
+        }
+        if (restoreError != null) throw restoreError;
+    }
+
+    private void RestoreCanvasesAndEffects(ref Exception? restoreError)
+    {
         foreach (Canvas canvas in _hiddenCanvases)
         {
-            if (canvas != null)
-            {
-                canvas.enabled = true;
-            }
+            if (canvas != null) AttemptRestore(() => RestoreIfOwned(canvas.enabled, false, value => canvas.enabled = value, true), ref restoreError);
         }
-        _hiddenCanvases.Clear();
         foreach (Behaviour effect in _disabledEffects)
         {
-            if (effect != null)
-            {
-                effect.enabled = true;
-            }
+            if (effect != null) AttemptRestore(() => RestoreIfOwned(effect.enabled, false, value => effect.enabled = value, true), ref restoreError);
         }
-        _disabledEffects.Clear();
+    }
+
+    private static void RestoreIfOwned<T>(T currentValue, T appliedValue, Action<T> restore, T originalValue)
+    {
+        if (NativeOverrideRestoration.ShouldRestore(currentValue, appliedValue)) restore(originalValue);
+    }
+
+    private static void AttemptRestore(Action restore, ref Exception? firstError)
+    {
+        try
+        {
+            restore();
+        }
+        catch (Exception exception)
+        {
+            firstError ??= exception;
+        }
     }
 
     private void HideHudCanvases(PauseMenuBook book)
     {
-        foreach (Canvas canvas in Object.FindObjectsByType<Canvas>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+        foreach (Canvas canvas in UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
         {
             if (!canvas.enabled || !canvas.isRootCanvas || canvas.name == MultiplayerDialogCanvasName ||
                 canvas.renderMode == RenderMode.WorldSpace || canvas.transform.IsChildOf(book.transform))

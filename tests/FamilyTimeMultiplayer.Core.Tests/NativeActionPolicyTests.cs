@@ -55,7 +55,8 @@ public sealed class NativeActionPolicyTests
     {
         CommandIntentMessage.Follow(true), CommandIntentMessage.Follow(false),
         new MamaToggleMessage(1), new BedRequestMessage(true), Hold(HoldPhase.Begin),
-        new ToolEditsMessage(EditTool.Axe, Array.Empty<WorldEdit>())
+        new ToolEditsMessage(EditTool.Axe, Array.Empty<WorldEdit>()),
+        new GenericActionRequestMessage("test.action", 1, Guid.NewGuid(), 1, null, 0, Array.Empty<byte>())
     };
 
     private static HoldMessage Hold(HoldPhase phase) => new HoldMessage(new HoldTarget(HoldTargetKind.Agent, 1), phase, true, NetVector3.Zero, NetQuaternion.Identity, NetVector3.Zero);

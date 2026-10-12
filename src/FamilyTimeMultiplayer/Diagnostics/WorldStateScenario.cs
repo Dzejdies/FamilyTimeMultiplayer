@@ -151,39 +151,33 @@ public sealed class WorldStateScenario : ScenarioRunner
         }
     }
 
-    [HarmonyPatch(typeof(WaterManager), nameof(WaterManager.SpawnWaterAtCell))]
-    private static class WaterProbe
+    internal static void ObserveWater(bool __runOriginal, bool __result)
     {
-        private static void Postfix(bool __runOriginal, bool __result)
+        if (Active != null && __runOriginal && __result && !ReplicationGate.BlocksLocalSimulation)
         {
-            if (Active != null && __runOriginal && __result && !ReplicationGate.BlocksLocalSimulation)
-            {
-                Active._waterApplied++;
-            }
+            Active._waterApplied++;
         }
     }
 
-    [HarmonyPatch(typeof(WeatherManager), "AnimateLightning")]
-    private static class LightningProbe
+    internal static void ObserveLightning(Vector3 position)
     {
-        private static void Postfix(Vector3 position)
+        if (Active != null && ReplicationGate.Role == SessionRole.Client && position == new Vector3(17f, 160f, 19f))
         {
-            if (Active != null && ReplicationGate.Role == SessionRole.Client && position == new Vector3(17f, 160f, 19f))
-            {
-                Active._lightningApplied++;
-            }
+            Active._lightningApplied++;
         }
     }
 
-    [HarmonyPatch(typeof(GATAnimationManager), nameof(GATAnimationManager.PlayAnimations))]
-    private static class AnimationProbe
+    internal static void ObserveAnimation(Handle[] handles, AnimationEnum animationType)
     {
-        private static void Postfix(Handle[] handles, AnimationEnum animationType)
+        if (Active != null && AnimationRelay.Applying && animationType == AnimationEnum.EAT && handles.Contains(Active._child))
         {
-            if (Active != null && AnimationRelay.Applying && animationType == AnimationEnum.EAT && handles.Contains(Active._child))
-            {
-                Active._animationsApplied++;
-            }
+            Active._animationsApplied++;
         }
+    }
+
+    public override void Dispose()
+    {
+        if (ReferenceEquals(Active, this)) Active = null;
+        base.Dispose();
     }
 }

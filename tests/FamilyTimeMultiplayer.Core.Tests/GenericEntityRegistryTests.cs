@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Threading;
 using FamilyTimeMultiplayer.Core.Replication;
 using Xunit;
 
@@ -97,13 +97,22 @@ public sealed class GenericEntityRegistryTests
     }
 
     [Fact]
-    public async Task RegistryRejectsOperationsOutsideItsCreatingThread()
+    public void RegistryRejectsOperationsOutsideItsCreatingThread()
     {
         var registry = new GenericEntityRegistry<string>(4);
         var identity = new NetworkEntityId(4, AgentKind, 12);
+        InvalidOperationException? observed = null;
+        var worker = new Thread(() =>
+        {
+            try { registry.Register(identity, "local-a", 1); }
+            catch (InvalidOperationException exception) { observed = exception; }
+        });
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => Task.Run(
-            () => registry.Register(identity, "local-a", 1)));
+        worker.Start();
+        worker.Join();
+
+        Assert.NotNull(observed);
+        Assert.Contains("thread", observed.Message);
     }
 
     private sealed class TestComponentAdapter : IEntityComponentAdapter<string>
@@ -119,6 +128,7 @@ public sealed class GenericEntityRegistryTests
 
         public EntityComponentAdapterDescriptor Descriptor { get; }
         public byte[] Capture(string entity) => Array.Empty<byte>();
+        public bool TryValidate(ReadOnlyMemory<byte> state, out string error) { error = string.Empty; return true; }
         public void Apply(string entity, int schemaVersion, ReadOnlyMemory<byte> state) { }
     }
 }

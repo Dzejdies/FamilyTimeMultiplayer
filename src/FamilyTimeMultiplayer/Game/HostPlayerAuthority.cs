@@ -79,10 +79,32 @@ public static class HostPlayerAuthority
 
     public static void AcceptPose(int id, ClientPoseMessage pose)
     {
-        if (!Players.TryGetValue(id, out Player player) || !MotionBudget.ValidPose(pose) ||
-            new Vector2(pose.Velocity.X, pose.Velocity.Z).magnitude > Speed || !player.Motion.TryMove(pose.Position, FamilyTimeMultiplayer.Game.GameClock.Now))
-            throw new InvalidDataException($"Client movement exceeds the authorized avatar motion budget: position={pose.Position}, velocity={pose.Velocity}.");
-        player.Pose = pose;
+        if (!TryAcceptPose(id, pose, out MotionPoseAssessment diagnostics))
+        {
+            throw new InvalidDataException($"Client movement rejected: {diagnostics.Rejection}; position={pose.Position}, velocity={pose.Velocity}.");
+        }
+    }
+
+    public static bool TryAcceptPose(int id, ClientPoseMessage pose, out MotionPoseAssessment diagnostics)
+    {
+        float speedLimit = Speed;
+        if (!Players.TryGetValue(id, out Player player))
+        {
+            diagnostics = new MotionPoseAssessment(MotionPoseRejection.MissingPlayerAuthority, default, 0, speedLimit);
+            return false;
+        }
+
+        double now = GameClock.Now;
+        diagnostics = player.Motion.AssessPose(pose, now, speedLimit);
+        if (!diagnostics.Accepted)
+        {
+            return false;
+        }
+
+        player.Motion.TryMove(pose.Position, now);
+        NetVector3 authorizedVelocity = diagnostics.Movement.GetAuthorizedVelocity(speedLimit);
+        player.Pose = new ClientPoseMessage(pose.Position, pose.YawDegrees, pose.PitchDegrees, authorizedVelocity);
+        return true;
     }
     public static void RequireNear(int id, Vector3 point, float reach)
     {

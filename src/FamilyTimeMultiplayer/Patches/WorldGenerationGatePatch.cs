@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Reflection;
 using FamilyTimeMultiplayer.UI;
@@ -12,6 +13,14 @@ internal static class WorldGenerationGatePatch
     private static readonly MethodInfo Original = AccessTools.Method(typeof(ProceduralMapManager), "GenerateStartupRoutine");
 
     private static bool _passThrough;
+    private static WorldPauseScopeLease? _startupPauseLease;
+
+    public static void ReleasePendingPauseScope()
+    {
+        WorldPauseScopeLease? lease = _startupPauseLease;
+        _startupPauseLease = null;
+        lease?.Dispose();
+    }
 
     private static bool Prefix(ProceduralMapManager __instance, ref IEnumerator __result)
     {
@@ -25,27 +34,51 @@ internal static class WorldGenerationGatePatch
 
     private static IEnumerator WaitForChoiceThenGenerate(ProceduralMapManager manager)
     {
-        WorldSerializer.WorldPauseScope? waitPause = World.worldSerializer != null
-            ? World.worldSerializer.BeginWorldPause("Choose how to play")
-            : null;
-        while (StartupGate.IsAwaitingChoice)
-        {
-            yield return null;
-        }
-        waitPause?.Dispose();
-        _passThrough = true;
-        IEnumerator generation;
+        WorldPauseScopeLease? waitPause = null;
+        IEnumerator? generation = null;
         try
         {
-            generation = (IEnumerator)Original.Invoke(manager, null);
+            WorldSerializer.WorldPauseScope? nativePause = World.worldSerializer != null
+                ? World.worldSerializer.BeginWorldPause("Choose how to play")
+                : null;
+            if (nativePause != null)
+            {
+                waitPause = new WorldPauseScopeLease(nativePause);
+                _startupPauseLease = waitPause;
+            }
+            while (StartupGate.IsAwaitingChoice)
+            {
+                yield return null;
+            }
+            WorldPauseScopeLease? completedWaitPause = waitPause;
+            waitPause = null;
+            if (ReferenceEquals(_startupPauseLease, completedWaitPause)) _startupPauseLease = null;
+            completedWaitPause?.Dispose();
+            _passThrough = true;
+            try
+            {
+                generation = (IEnumerator)Original.Invoke(manager, null);
+            }
+            finally
+            {
+                _passThrough = false;
+            }
+            while (generation.MoveNext())
+            {
+                yield return generation.Current;
+            }
         }
         finally
         {
-            _passThrough = false;
-        }
-        while (generation.MoveNext())
-        {
-            yield return generation.Current;
+            try
+            {
+                (generation as IDisposable)?.Dispose();
+            }
+            finally
+            {
+                if (ReferenceEquals(_startupPauseLease, waitPause)) _startupPauseLease = null;
+                waitPause?.Dispose();
+            }
         }
     }
 }
