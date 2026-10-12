@@ -53,7 +53,7 @@ public sealed class TcpNetConnection : INetConnection
         _requiresClientAuthentication = awaitingHandshake;
         _incoming = awaitingHandshake ? new BoundedFrameQueue<INetMessage>(16, 64 * 1024) : new BoundedFrameQueue<INetMessage>();
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        if (awaitingHandshake) _client.ReceiveTimeout = 15000;
+        _client.ReceiveTimeout = 0;
         _client.NoDelay = true;
         _stream = client.GetStream();
         Id = Interlocked.Increment(ref _nextId);

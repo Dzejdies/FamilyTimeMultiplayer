@@ -107,6 +107,32 @@ public sealed class TransferAdmissionSecurityTests
     }
 
     [Fact]
+    public void AdmittedPeerCanRemainSilentWhileItsWorldLoads()
+    {
+        using var listener = new TcpNetListener(IPAddress.Loopback, 0);
+        using var client = new TcpClient();
+        client.Connect(IPAddress.Loopback, listener.Port);
+        INetConnection? receiver = null;
+        Assert.True(SpinWait.SpinUntil(() => listener.TryAccept(out receiver!), TimeSpan.FromSeconds(5)));
+        using (receiver!)
+        {
+            using var writer = new BinaryWriter(client.GetStream());
+            byte[] hello = MessageCodec.Encode(new HelloMessage(1, "b", "peer"));
+            writer.Write(hello.Length); writer.Write(hello);
+            Assert.True(SpinWait.SpinUntil(() => receiver!.TryReceive(out _), TimeSpan.FromSeconds(5)));
+            Thread.Sleep(100);
+            ((TcpNetConnection)receiver!).Admit();
+            Thread.Sleep(16000);
+            Assert.True(receiver.IsOpen, receiver.CloseReason);
+            byte[] ready = MessageCodec.Encode(new SignedClientMessage(1,
+                MessageCodec.Encode(new ClientReadyMessage(1)), new byte[256]));
+            writer.Write(ready.Length); writer.Write(ready);
+            Assert.True(SpinWait.SpinUntil(() => receiver.TryReceive(out INetMessage message) && message is SignedClientMessage,
+                TimeSpan.FromSeconds(5)));
+        }
+    }
+
+    [Fact]
     public void PendingRelayAcceptAlsoRetainsOnlyASocket()
     {
         using var relay = new FamilyTimeMultiplayer.Core.Transport.Relay.RelayServer(IPAddress.Loopback, 0, _ => { });
