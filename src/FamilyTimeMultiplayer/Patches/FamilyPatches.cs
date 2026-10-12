@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using FamilyTimeMultiplayer.Families;
 using GAT;
@@ -6,9 +7,15 @@ using HarmonyLib;
 
 namespace FamilyTimeMultiplayer.Patches;
 
-[HarmonyPatch(typeof(CommandOwnershipService), nameof(CommandOwnershipService.FindAvailableWorkers))]
+[HarmonyPatch]
 internal static class FamilyWorkerFilterPatch
 {
+    private static IEnumerable<MethodBase> TargetMethods()
+    {
+        yield return AccessTools.Method(typeof(CommandOwnershipService), nameof(CommandOwnershipService.FindAvailableWorkers));
+        yield return AccessTools.Method(typeof(CommandOwnershipService), nameof(CommandOwnershipService.FindReassignableWorkers));
+    }
+
     private static void Prefix(ref Predicate<Handle> additionalFilter)
     {
         HostFamilyService? families = HostFamilyService.Current;
@@ -16,8 +23,20 @@ internal static class FamilyWorkerFilterPatch
         {
             return;
         }
-        Predicate<Handle>? original = additionalFilter;
-        additionalFilter = handle => families.BelongsToActiveOwner(handle) && (original?.Invoke(handle) ?? true);
+        additionalFilter = families.FilterActiveFamily(additionalFilter);
+    }
+}
+
+[HarmonyPatch(typeof(CommandOwnershipService), nameof(CommandOwnershipService.FindUnavailableWorkers))]
+internal static class FamilyUnavailableWorkerPatch
+{
+    private static void Postfix(ref Handle[] __result)
+    {
+        HostFamilyService? families = HostFamilyService.Current;
+        if (families != null)
+        {
+            __result = families.ExcludeOtherFamiliesFromWorkers(__result);
+        }
     }
 }
 

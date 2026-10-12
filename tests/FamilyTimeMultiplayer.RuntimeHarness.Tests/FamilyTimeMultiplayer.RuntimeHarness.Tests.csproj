@@ -15,5 +15,6 @@
     <Compile Include="../../src/FamilyTimeMultiplayer/Diagnostics/ScenarioReadiness.cs" Link="ScenarioReadiness.cs" />
     <Compile Include="../../src/FamilyTimeMultiplayer/Diagnostics/ScenarioDiagnosticPatchPlan.cs" Link="ScenarioDiagnosticPatchPlan.cs" />
     <Compile Include="../../src/FamilyTimeMultiplayer/UI/WorldPauseScopeLease.cs" Link="WorldPauseScopeLease.cs" />
+    <Compile Include="../../src/FamilyTimeMultiplayer/Commands/CommanderContext.cs" Link="CommanderContext.cs" />
   </ItemGroup>
 </Project>

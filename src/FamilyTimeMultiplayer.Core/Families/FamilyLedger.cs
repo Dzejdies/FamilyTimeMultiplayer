@@ -50,6 +50,21 @@ public sealed class FamilyLedger
 
     public bool HasFamily(string owner) => CountOf(owner) > 0;
 
+    public ushort[] ExcludedWorkersFor(string owner, IEnumerable<ushort> workers, IEnumerable<ushort> unavailable)
+    {
+        var exclusions = new HashSet<ushort>(unavailable);
+        foreach (ushort worker in workers)
+        {
+            if (!Belongs(worker, owner))
+            {
+                exclusions.Add(worker);
+            }
+        }
+        var result = new ushort[exclusions.Count];
+        exclusions.CopyTo(result);
+        return result;
+    }
+
     public void Clear()
     {
         _ownerByMember.Clear();

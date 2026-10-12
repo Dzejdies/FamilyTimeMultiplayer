@@ -30,6 +30,23 @@ public static class CommanderContext
 
     public static void ResetAfterSession() => Active = null;
 
+    public static IDisposable? EnterNativeHost()
+    {
+        IRemoteCommanderIdentity? previous = Active;
+        if (previous == null) return null;
+        Active = null;
+        try
+        {
+            Hook?.OnExit(previous);
+            return new NativeHostScope(previous);
+        }
+        catch
+        {
+            Active = previous;
+            throw;
+        }
+    }
+
     public static Scope Enter(IRemoteCommanderIdentity commander)
     {
         if (Active != null && !ReferenceEquals(Active, commander))
@@ -71,6 +88,22 @@ public static class CommanderContext
             {
                 Hook?.OnExit(_commander);
             }
+        }
+    }
+
+    private sealed class NativeHostScope : IDisposable
+    {
+        private IRemoteCommanderIdentity? _previous;
+
+        public NativeHostScope(IRemoteCommanderIdentity previous) => _previous = previous;
+
+        public void Dispose()
+        {
+            IRemoteCommanderIdentity? previous = _previous;
+            if (previous == null) return;
+            _previous = null;
+            Active = previous;
+            Hook?.OnEnter(previous);
         }
     }
 }

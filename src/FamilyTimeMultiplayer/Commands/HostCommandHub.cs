@@ -88,8 +88,7 @@ public sealed class HostCommandHub : IDisposable
         if (_commanders.TryGetValue(playerId, out RemoteCommander commander)) commander.SuspendInputGestures();
         else if (playerId == PlayerRosterMessage.HostPlayerId)
         {
-            GameApiCompatibility.CancelFollowGesture(HostControllers().Follow);
-            GameApiCompatibility.StopLocalSelectionGesture(World.commandService);
+            GameApiCompatibility.ResetLocalCommandGestures(World.commandService);
         }
     }
 
@@ -196,7 +195,15 @@ public sealed class HostCommandHub : IDisposable
         }
     }
 
-    private int PlayerIdOf(FollowController follow)
+    internal IDisposable? EnterFollowScope(FollowController follow)
+    {
+        int playerId = PlayerIdOf(follow);
+        return _commanders.TryGetValue(playerId, out RemoteCommander commander)
+            ? CommanderContext.Enter(commander)
+            : CommanderContext.EnterNativeHost();
+    }
+
+    internal int PlayerIdOf(FollowController follow)
     {
         foreach (KeyValuePair<int, RemoteCommander> entry in _commanders)
         {

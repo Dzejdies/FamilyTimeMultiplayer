@@ -93,9 +93,7 @@ public static class ClientCommandBridge
         CommandService? service = World.commandService;
         if (service == null || World.isShuttingDown) return;
         using var nativeCleanup = ReplicationGate.AuthorizeReplication();
-        GameApiCompatibility.StopLocalSelectionGesture(service);
-        FollowController? follow = Traverse.Create(service).Field<FollowController>("_follow").Value;
-        if (follow != null) GameApiCompatibility.CancelFollowGesture(follow);
+        GameApiCompatibility.ResetLocalCommandGestures(service);
     }
 
     private static void RefreshLocalCrosshair()

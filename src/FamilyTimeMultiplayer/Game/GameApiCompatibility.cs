@@ -297,8 +297,7 @@ internal static class GameApiCompatibility
         }
     }
 
-    public static void StopLocalSelectionGesture(CommandService service) =>
-        ResolveMethod(typeof(CommandService), "StopContinuousSelection").Invoke(service, null);
+    public static void ResetLocalCommandGestures(CommandService service) => service.ResetTutorialGestures();
 
     public static void ActivateFollowCursor(FollowController follow)
     {

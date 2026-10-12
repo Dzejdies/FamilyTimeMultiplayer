@@ -169,6 +169,25 @@ public sealed class HostFamilyService : IDisposable
 
     public bool BelongsToActiveOwner(Handle handle) => _ledger.Belongs(handle.stableIndex, ActiveOwner);
 
+    public Predicate<Handle> FilterActiveFamily(Predicate<Handle>? original)
+    {
+        string owner = ActiveOwner;
+        return handle => _ledger.Belongs(handle.stableIndex, owner) && (original?.Invoke(handle) ?? true);
+    }
+
+    public Handle[] ExcludeOtherFamiliesFromWorkers(IEnumerable<Handle> unavailable) =>
+        _ledger.ExcludedWorkersFor(ActiveOwner,
+                GameFamilyAccess.CurrentChildren().Select(handle => handle.stableIndex),
+                unavailable.Select(handle => handle.stableIndex))
+            .Select(GatInterop.ToHandle).ToArray();
+
+    public Handle[] FilterFollowers(FollowController follow, IEnumerable<Handle> followers)
+    {
+        int playerId = HostCommandHub.Current?.PlayerIdOf(follow) ?? Core.Protocol.PlayerRosterMessage.HostPlayerId;
+        string owner = OwnerOfPlayer(playerId);
+        return followers.Where(handle => _ledger.Belongs(handle.stableIndex, owner)).ToArray();
+    }
+
     public int ChildrenOf(string owner) => _ledger.CountOf(owner);
 
     public float MeanDistanceOf(string owner, Vector3 from)
