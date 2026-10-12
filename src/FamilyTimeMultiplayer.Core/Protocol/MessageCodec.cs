@@ -6,7 +6,7 @@ namespace FamilyTimeMultiplayer.Core.Protocol;
 
 public static class ProtocolConstants
 {
-    public const int Version = 22;
+    public const int Version = 23;
     public static bool IsCompatibleVersion(int remoteVersion) => remoteVersion == Version;
     public const long MaxWorldBytes = 1024L * 1024 * 1024;
     public static void RequireWorldLength(long length)

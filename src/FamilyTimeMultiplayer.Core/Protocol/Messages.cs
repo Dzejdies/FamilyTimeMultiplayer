@@ -101,7 +101,7 @@ public enum FamilyMode : byte
 
 public sealed class WelcomeMessage : INetMessage
 {
-    public WelcomeMessage(int playerId, ushort avatarStableIndex, long worldByteLength, FamilyMode familyMode, long transferId = 1, long worldGeneration = 1)
+    public WelcomeMessage(int playerId, ushort avatarStableIndex, long worldByteLength, FamilyMode familyMode, long transferId = 1, long worldGeneration = 1, IEnumerable<AddonDescriptor>? addons = null)
     {
         PlayerId = playerId;
         AvatarStableIndex = avatarStableIndex;
@@ -111,6 +111,7 @@ public sealed class WelcomeMessage : INetMessage
         TransferId = transferId;
         if (worldGeneration < 1) throw new InvalidDataException("Invalid addon world generation.");
         WorldGeneration = worldGeneration;
+        Addons = AddonCapabilities.Normalize(addons ?? Array.Empty<AddonDescriptor>());
     }
 
     public MessageType Type => MessageType.Welcome;
@@ -120,6 +121,7 @@ public sealed class WelcomeMessage : INetMessage
     public FamilyMode FamilyMode { get; }
     public long TransferId { get; }
     public long WorldGeneration { get; }
+    public IReadOnlyList<AddonDescriptor> Addons { get; }
 
     public void Write(BinaryWriter writer)
     {
@@ -129,6 +131,8 @@ public sealed class WelcomeMessage : INetMessage
         writer.Write((byte)FamilyMode);
         writer.Write(TransferId);
         writer.Write(WorldGeneration);
+        writer.Write((byte)Addons.Count);
+        foreach (AddonDescriptor addon in Addons) addon.Write(writer);
     }
 
     public static WelcomeMessage Read(BinaryReader reader)
@@ -142,7 +146,7 @@ public sealed class WelcomeMessage : INetMessage
         {
             throw new InvalidDataException($"Welcome announces unknown family mode {(byte)mode}.");
         }
-        return new WelcomeMessage(playerId, avatar, length, mode, reader.ReadInt64(), reader.ReadInt64());
+        return new WelcomeMessage(playerId, avatar, length, mode, reader.ReadInt64(), reader.ReadInt64(), AddonCapabilities.Read(reader));
     }
 }
 

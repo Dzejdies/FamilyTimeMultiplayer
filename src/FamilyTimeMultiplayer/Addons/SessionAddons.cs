@@ -71,6 +71,7 @@ internal sealed class SessionAddonRuntime : IDisposable
     private readonly bool _host;
     private readonly List<AddonContext> _contexts = new List<AddonContext>();
     private bool _disposed;
+    private readonly Dictionary<int, HashSet<string>> _peerAddons = new Dictionary<int, HashSet<string>>();
     public SessionAddonRuntime(ISessionAddon[] addons, bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double> hostTime)
     {
         _addons = addons;
@@ -78,12 +79,24 @@ internal sealed class SessionAddonRuntime : IDisposable
         foreach (ISessionAddon addon in addons) _contexts.Add(new AddonContext(addon.Descriptor.Id, host, localPlayer, generation, send, hostTime));
     }
     public void Start() { for (int index = 0; index < _addons.Length; index++) _addons[index].OnSessionStarted(_contexts[index]); }
-    public void PeerReady(int id) { foreach (ISessionAddon addon in _addons) addon.OnPeerReady(id); }
-    public void PeerLeft(int id) { foreach (ISessionAddon addon in _addons) addon.OnPeerLeft(id); }
+    public void PeerReady(int id, IEnumerable<AddonDescriptor> capabilities)
+    {
+        _peerAddons[id] = new HashSet<string>(capabilities.Select(addon => addon.Id), StringComparer.Ordinal);
+        foreach (ISessionAddon addon in AddonsForPeer(id)) addon.OnPeerReady(id);
+    }
+    public void PeerLeft(int id)
+    {
+        foreach (ISessionAddon addon in AddonsForPeer(id)) addon.OnPeerLeft(id);
+        _peerAddons.Remove(id);
+        foreach (AddonContext context in _contexts) context.ReleasePlayer(id);
+    }
+    private IEnumerable<ISessionAddon> AddonsForPeer(int id) =>
+        _peerAddons.TryGetValue(id, out HashSet<string>? supported) ? _addons.Where(addon => supported.Contains(addon.Descriptor.Id)) : Array.Empty<ISessionAddon>();
     public void Reload() { foreach (AddonContext context in _contexts) context.ReleaseClaims(); foreach (ISessionAddon addon in _addons) addon.OnWorldReloaded(); }
     public void Receive(int sender, AddonMessage message)
     {
         ISessionAddon addon = _addons.SingleOrDefault(item => item.Descriptor.Id == message.AddonId) ?? throw new InvalidDataException("Unknown session addon.");
+        if (!AddonsForPeer(sender).Contains(addon)) throw new InvalidDataException("Addon is not available for this peer.");
         if (_host)
         {
             HostCommandHub commands = HostCommandHub.Current ?? throw new InvalidOperationException("Host command service is missing.");
@@ -95,7 +108,7 @@ internal sealed class SessionAddonRuntime : IDisposable
     {
         pose = null!;
         bool found = false;
-        foreach (ISessionAddon addon in _addons)
+        foreach (ISessionAddon addon in AddonsForPlayer(playerId))
         {
             if (!addon.TryGetAuthoritativePlayerPose(playerId, out ClientPoseMessage candidate)) continue;
             if (found) throw new InvalidOperationException("Multiple addons claimed player movement authority.");
@@ -103,8 +116,11 @@ internal sealed class SessionAddonRuntime : IDisposable
         }
         return found;
     }
+    private IEnumerable<ISessionAddon> AddonsForPlayer(int playerId) =>
+        playerId == PlayerRosterMessage.HostPlayerId && _host ? _addons : AddonsForPeer(playerId);
+
     public bool AllowsNativeAction(int playerId, INetMessage message) =>
-        Core.Addons.NativeActionPolicy.Allows(playerId, message, _addons.OfType<ISessionAddonActionPolicy>());
+        Core.Addons.NativeActionPolicy.Allows(playerId, message, AddonsForPlayer(playerId).OfType<ISessionAddonActionPolicy>());
 
     public void Dispose()
     {

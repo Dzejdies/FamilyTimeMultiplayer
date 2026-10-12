@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Collections.Generic;
 using BepInEx.Logging;
@@ -36,6 +37,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private bool _identityChallengeReceived;
     private HelloMessage? _identityHello;
     private Addons.SessionAddonRuntime? _addons;
+    private IReadOnlyList<AddonDescriptor> _sharedAddons = Array.Empty<AddonDescriptor>();
     private double _addonHostClockOffset;
     private readonly string _endpointDescription;
     private readonly JoinTarget _target;
@@ -260,6 +262,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         switch (message)
         {
             case AddonMessage addon:
+                if (!_sharedAddons.Any(capability => capability.Id == addon.AddonId)) throw new InvalidDataException("Host sent an addon that was not negotiated.");
                 if (_phase == ClientPhase.Live && addon.WorldGeneration == _welcome!.WorldGeneration) _addons!.Receive(PlayerRosterMessage.HostPlayerId, addon);
                 break;
             case GenericEntityStateMessage state when _phase == ClientPhase.Live:
@@ -292,6 +295,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 Finish($"Host refused: {reject.Reason}");
                 break;
             case WelcomeMessage welcome:
+                _sharedAddons = AddonCapabilities.Shared(Addons.SessionAddonRegistry.Descriptors, welcome.Addons);
                 BeginWorldTransfer(welcome);
                 break;
             case WorldChunkMessage chunk when _phase == ClientPhase.ReceivingWorld:
@@ -308,7 +312,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 if (_phase == ClientPhase.Live && _addons != null)
                 {
                     foreach (RosterEntry removed in _roster.Where(old => !roster.Players.Any(current => current.PlayerId == old.PlayerId))) _addons.PeerLeft(removed.PlayerId);
-                    foreach (RosterEntry added in roster.Players.Where(current => !_roster.Any(old => old.PlayerId == current.PlayerId))) _addons.PeerReady(added.PlayerId);
+                    foreach (RosterEntry added in roster.Players.Where(current => !_roster.Any(old => old.PlayerId == current.PlayerId))) _addons.PeerReady(added.PlayerId, PeerAddonCapabilities(added.PlayerId));
                 }
                 _roster = roster.Players;
                 break;
@@ -468,7 +472,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _phase = ClientPhase.Live;
         if (_addons == null) _addons = Addons.SessionAddonRegistry.Start(false, () => LocalPlayerId, () => _welcome!.WorldGeneration, SendAddon, () => GameClock.Now + _addonHostClockOffset);
         else _addons.Reload();
-        foreach (RosterEntry player in _roster) _addons.PeerReady(player.PlayerId);
+        foreach (RosterEntry player in _roster) _addons.PeerReady(player.PlayerId, PeerAddonCapabilities(player.PlayerId));
         ClientCommandBridge.Attach(this);
         Families.ClientNight.Attach(this);
         Holds.ClientHolds.UpdateInterval = _settings.PoseInterval;
@@ -609,8 +613,12 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     }
 
 
+    private IEnumerable<AddonDescriptor> PeerAddonCapabilities(int playerId) =>
+        _sharedAddons.Where(addon => playerId == LocalPlayerId || playerId == PlayerRosterMessage.HostPlayerId || addon.Requirement == AddonRequirement.Required);
+
     private void SendAddon(int? recipient, AddonMessage message)
     {
+        if (!_sharedAddons.Any(addon => addon.Id == message.AddonId)) throw new InvalidOperationException("Host does not support this optional addon.");
         if (_phase != ClientPhase.Live || recipient != PlayerRosterMessage.HostPlayerId) throw new InvalidOperationException("Client addon sends require a live host connection.");
         SendCurrentPose(GameClock.Now);
         _connection!.Send(message);

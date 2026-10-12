@@ -5,19 +5,27 @@ using System.Linq;
 
 namespace FamilyTimeMultiplayer.Core.Protocol;
 
+public enum AddonRequirement : byte
+{
+    Required = 0,
+    Optional = 1,
+}
+
 public sealed class AddonDescriptor
 {
-    public AddonDescriptor(string id, string version, string contentHash)
+    public AddonDescriptor(string id, string version, string contentHash, AddonRequirement requirement = AddonRequirement.Required)
     {
         if (string.IsNullOrWhiteSpace(id) || id.Length > 64 || id.Any(character => !char.IsLetterOrDigit(character) && character != '.' && character != '-' && character != '_')) throw new InvalidDataException("Invalid addon identifier.");
         if (string.IsNullOrWhiteSpace(version) || version.Length > 32 || string.IsNullOrWhiteSpace(contentHash) || contentHash.Length > 128) throw new InvalidDataException("Invalid addon compatibility descriptor.");
-        Id = id; Version = version; ContentHash = contentHash;
+        if (requirement != AddonRequirement.Required && requirement != AddonRequirement.Optional) throw new InvalidDataException("Invalid addon requirement.");
+        Id = id; Version = version; ContentHash = contentHash; Requirement = requirement;
     }
     public string Id { get; }
     public string Version { get; }
     public string ContentHash { get; }
-    public void Write(BinaryWriter writer) { writer.Write(Id); writer.Write(Version); writer.Write(ContentHash); }
-    public static AddonDescriptor Read(BinaryReader reader) => new AddonDescriptor(ProtocolGuards.ReadText(reader, 64, "addon ID"), ProtocolGuards.ReadText(reader, 32, "addon version"), ProtocolGuards.ReadText(reader, 128, "addon content hash"));
+    public AddonRequirement Requirement { get; }
+    public void Write(BinaryWriter writer) { writer.Write(Id); writer.Write(Version); writer.Write(ContentHash); writer.Write((byte)Requirement); }
+    public static AddonDescriptor Read(BinaryReader reader) => new AddonDescriptor(ProtocolGuards.ReadText(reader, 64, "addon ID"), ProtocolGuards.ReadText(reader, 32, "addon version"), ProtocolGuards.ReadText(reader, 128, "addon content hash"), (AddonRequirement)reader.ReadByte());
 }
 
 public static class AddonCapabilities
@@ -32,8 +40,23 @@ public static class AddonCapabilities
     public static bool AreCompatible(IEnumerable<AddonDescriptor> first, IEnumerable<AddonDescriptor> second)
     {
         IReadOnlyList<AddonDescriptor> left = Normalize(first), right = Normalize(second);
-        return left.Count == right.Count && left.Zip(right, (a, b) => a.Id == b.Id && a.Version == b.Version && a.ContentHash == b.ContentHash).All(match => match);
+        return RequiredMatch(left, right) && RequiredMatch(right, left);
     }
+
+    public static IReadOnlyList<AddonDescriptor> Shared(IEnumerable<AddonDescriptor> first, IEnumerable<AddonDescriptor> second)
+    {
+        IReadOnlyList<AddonDescriptor> left = Normalize(first), right = Normalize(second);
+        if (!AreCompatible(left, right)) throw new InvalidDataException("Required multiplayer addon is missing or incompatible.");
+        return Array.AsReadOnly(left.Where(addon => right.Any(candidate => Matches(addon, candidate))).ToArray());
+    }
+
+    private static bool RequiredMatch(IReadOnlyList<AddonDescriptor> required, IReadOnlyList<AddonDescriptor> available) =>
+        required.Where(addon => addon.Requirement == AddonRequirement.Required)
+            .All(addon => available.Any(candidate => Matches(addon, candidate)));
+
+    private static bool Matches(AddonDescriptor first, AddonDescriptor second) =>
+        first.Id == second.Id && first.Version == second.Version && first.ContentHash == second.ContentHash;
+
     public static IReadOnlyList<AddonDescriptor> Read(BinaryReader reader)
     {
         int count = reader.ReadByte();

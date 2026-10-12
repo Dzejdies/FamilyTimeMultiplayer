@@ -54,6 +54,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         public HelloMessage? IdentityHello { get; set; }
         public byte[]? IdentityChallenge { get; set; }
         public bool Authenticated { get; set; }
+        public IReadOnlyList<AddonDescriptor> SharedAddons { get; set; } = Array.Empty<AddonDescriptor>();
         public Core.Security.SignedClientVerifier? ClientVerifier { get; set; }
         public string Owner { get; set; } = string.Empty;
         public PeerPhase Phase { get; set; } = PeerPhase.AwaitingHello;
@@ -546,7 +547,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     private void SendAddon(int? recipient, AddonMessage message)
     {
         if (recipient == LocalPlayerId) throw new InvalidOperationException("Host addon messages must target remote players.");
-        foreach (Peer peer in _peers.Where(peer => peer.Phase == PeerPhase.Live && peer.Connection.IsOpen && (recipient == null || recipient == peer.PlayerId))) peer.Connection.Send(message);
+        foreach (Peer peer in _peers.Where(peer => peer.Phase == PeerPhase.Live && peer.Connection.IsOpen && (recipient == null || recipient == peer.PlayerId) && peer.SharedAddons.Any(addon => addon.Id == message.AddonId))) peer.Connection.Send(message);
     }
 
     private void SuspendAddonRestrictedGestures()
@@ -594,6 +595,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                     HandleIdentityProof(peer, proof);
                     break;
                 case AddonMessage addon when peer.Phase == PeerPhase.Live:
+                    if (!peer.SharedAddons.Any(capability => capability.Id == addon.AddonId)) throw new InvalidDataException("Addon was not negotiated for this peer.");
                     if (addon.WorldGeneration == _addonWorldGeneration) _addons.Receive(peer.PlayerId, addon);
                     break;
                 case AddonMessage _:
@@ -754,9 +756,10 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         }
         if (!AddonCapabilities.AreCompatible(Addons.SessionAddonRegistry.Descriptors, hello.Addons))
         {
-            Reject(peer, "Installed multiplayer addons differ in ID, version or content. Install the same addon packages.");
+            Reject(peer, "A required multiplayer addon is missing or differs in version/content. Optional local addons may differ.");
             return;
         }
+        peer.SharedAddons = AddonCapabilities.Shared(Addons.SessionAddonRegistry.Descriptors, hello.Addons);
         Core.Security.PlayerIdentity.ValidatePublicKey(hello.PublicKey);
         peer.RequestedName = string.IsNullOrWhiteSpace(hello.PlayerName) ? $"Player {peer.PlayerId}" : hello.PlayerName.Trim();
         peer.Name = UniqueName(peer, peer.RequestedName);
@@ -856,7 +859,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
             peer.Connection.Send(Mamas.CaptureRoster());
         }
         _rosterDirty = true;
-        _addons.PeerReady(peer.PlayerId);
+        _addons.PeerReady(peer.PlayerId, peer.SharedAddons);
         _log.LogInfo($"[Host] '{peer.Name}' is live (flushed {backlog.Count} queued world events)");
     }
 
@@ -988,7 +991,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
             }
             byte[] world = File.ReadAllBytes(snapshotPath);
             ProtocolConstants.RequireWorldLength(world.LongLength);
-            peer.Connection.Send(new WelcomeMessage(peer.PlayerId, peer.Avatar.stableIndex, world.LongLength, _familyMode, transferId, _addonWorldGeneration));
+            peer.Connection.Send(new WelcomeMessage(peer.PlayerId, peer.Avatar.stableIndex, world.LongLength, _familyMode, transferId, _addonWorldGeneration, Addons.SessionAddonRegistry.Descriptors));
             for (long offset = 0; offset < world.LongLength; offset += ProtocolConstants.WorldChunkBytes)
             {
                 int length = (int)Math.Min(ProtocolConstants.WorldChunkBytes, world.LongLength - offset);
