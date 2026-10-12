@@ -420,6 +420,9 @@ public sealed partial class ClientSession : ISession, IClientCommandSink, IAddon
             _puppeteer.ReleaseAll();
             _interpolator.Clear();
         }
+        _phase = ClientPhase.ReceivingWorld;
+        ResolvePendingActions("The host replaced the world before acknowledging the action.");
+        if (_phase == ClientPhase.Finished) return;
         _incomingWorld?.Dispose();
         _pendingRigidMap = null;
         _lifecycleMapReceived = false;
@@ -435,7 +438,6 @@ public sealed partial class ClientSession : ISession, IClientCommandSink, IAddon
         _genericStates.ResetForSnapshot();
         _welcome = welcome;
         _incomingWorld = new IncomingWorldFile(WorldFiles.PathFor(WorldFiles.ClientReceivedMapName), welcome.WorldByteLength);
-        _phase = ClientPhase.ReceivingWorld;
         Status = "Downloading world 0%";
         _log.LogInfo($"[Client] welcome as player #{welcome.PlayerId}, avatar {welcome.AvatarStableIndex}, transfer {welcome.TransferId}, world {welcome.WorldByteLength / (1024 * 1024)} MB");
     }
@@ -644,14 +646,20 @@ public sealed partial class ClientSession : ISession, IClientCommandSink, IAddon
         catch (Exception exception) { _log.LogWarning($"[Client] generic action result callback failed: {exception.Message}"); }
     }
 
+    private void ResolvePendingActions(string reason)
+    {
+        Guid[] pending = _pendingGenericActions.ToArray();
+        _pendingGenericActions.Clear();
+        foreach (Guid requestId in pending)
+            NotifyGenericActionCompleted(new GenericActionResultMessage(requestId, GenericActionOutcome.Unknown, reason));
+    }
+
     private void Finish(string reason)
     {
-        foreach (Guid requestId in _pendingGenericActions)
-            NotifyGenericActionCompleted(new GenericActionResultMessage(requestId, GenericActionOutcome.Unknown, "Connection ended before the host acknowledged the action."));
-        _pendingGenericActions.Clear();
+        _phase = ClientPhase.Finished;
+        ResolvePendingActions("Connection ended before the host acknowledged the action.");
         _addons?.Dispose();
         _addons = null;
-        _phase = ClientPhase.Finished;
         _water.Dispose();
         _incomingWorld?.Dispose();
         _incomingWorld = null;
