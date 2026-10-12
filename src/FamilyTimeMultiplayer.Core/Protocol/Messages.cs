@@ -730,7 +730,10 @@ public enum CommandTargetKind : byte
 
 public sealed class CommandIntentMessage : INetMessage
 {
-    public CommandIntentMessage(CommandIntentKind kind, CommandTargetKind targetKind, int rigidNetId, int propCellX, int propCellZ, string propName, NetVector3 point, bool commandLocked = false)
+    public CommandIntentMessage(CommandIntentKind kind, CommandTargetKind targetKind, int rigidNetId, int propCellX, int propCellZ, string propName, NetVector3 point)
+        : this(kind, targetKind, rigidNetId, propCellX, propCellZ, propName, point, false) { }
+
+    public CommandIntentMessage(CommandIntentKind kind, CommandTargetKind targetKind, int rigidNetId, int propCellX, int propCellZ, string propName, NetVector3 point, bool commandLocked)
     {
         CommandLocked = commandLocked;
         Kind = kind;

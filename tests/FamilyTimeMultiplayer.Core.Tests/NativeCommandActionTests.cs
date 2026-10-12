@@ -117,6 +117,18 @@ public sealed class NativeCommandActionTests
         Assert.Equal(0, mutations);
     }
 
+    [Fact]
+    public void ExistingAddonsKeepTheSevenArgumentCommandConstructor()
+    {
+        var signature = new[] { typeof(CommandIntentKind), typeof(CommandTargetKind), typeof(int),
+            typeof(int), typeof(int), typeof(string), typeof(NetVector3) };
+        var constructor = typeof(CommandIntentMessage).GetConstructor(signature);
+        Assert.NotNull(constructor);
+        var intent = Assert.IsType<CommandIntentMessage>(constructor!.Invoke(new object[]
+            { CommandIntentKind.CommandLock, CommandTargetKind.Agent, 12, 0, 0, string.Empty, NetVector3.Zero }));
+        Assert.Equal(MessageCodec.Encode(CommandIntentMessage.ToggleCommandLock(12)), MessageCodec.Encode(intent));
+    }
+
     private static GenericActionRequestMessage Request(CommandIntentMessage intent) =>
         new(NativeCommandActionAdapter.ActionId, 1, Guid.NewGuid(), 1, new NetworkEntityId(1, new EntityKind(intent.TargetKind == CommandTargetKind.Agent ? "agent" : "rigid"), 12), 1, MessageCodec.Encode(intent));
 
