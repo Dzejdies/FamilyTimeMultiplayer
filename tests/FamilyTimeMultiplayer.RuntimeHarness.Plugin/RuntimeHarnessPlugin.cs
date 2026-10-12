@@ -30,6 +30,7 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
     private string? _timeoutCondition;
     private BoundedWait? _conditionWait;
     private bool _complete;
+    private NativeInputProbe? _nativeInputProbe;
     private bool _pupObserverInstalled;
     private Assembly? _pupAssembly;
     private object? _pupModInstance;
@@ -61,8 +62,17 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
         _scenario = arguments[scenarioIndex + 1];
         int phaseIndex = Array.IndexOf(arguments, FamilyPhaseArgument);
         _familyPhase = phaseIndex >= 0 && phaseIndex + 1 < arguments.Length ? arguments[phaseIndex + 1] : string.Empty;
+        if (_scenario == "native-input")
+        {
+            typeof(Application).GetProperty("runInBackground")?.GetSetMethod()?.Invoke(null, new object[] { true });
+            QualitySettings.SetQualityLevel(0, true);
+            FamilyTimeMultiplayer.Addons.SessionAddonRegistry.Register(new ReplicationProbeAddon("runtime.shared", message => Logger.LogInfo($"[AddonProbe] {message}")));
+            if (arguments.Contains("-ftmp-harness-host-only-addon"))
+                FamilyTimeMultiplayer.Addons.SessionAddonRegistry.Register(new ReplicationProbeAddon("runtime.host-only", message => Logger.LogInfo($"[AddonProbe] {message}")));
+        }
         _report = new ScenarioReport(_scenario, _runId);
         SetFact("scenario.phase", _familyPhase);
+        if (_scenario == "native-input") _nativeInputProbe = new NativeInputProbe(FindStaticField, PropertyValue, SetFact, message => Logger.LogInfo($"[NativeInput] {message}"));
         _startedAt = Time.realtimeSinceStartup;
         _unityThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
         AddEnvironmentFacts();
@@ -71,13 +81,18 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
 
     private void Update()
     {
-        if (_complete || _report == null)
-        {
-            return;
-        }
         try
         {
+            _nativeInputProbe?.PrepareFixture();
+            if (_complete || _report == null) return;
             CaptureCommonFacts();
+            if (_nativeInputProbe != null)
+            {
+                ScenarioVerdict? verdict = _nativeInputProbe.Tick(IsWorldReady());
+                if (verdict.HasValue) Finish(verdict.Value, "Native input lifecycle and hover probe completed; inspect captured facts.");
+                else FinishOnTimeout(IsWorldReady() ? "native-input" : "world-ready", "Native input probe prerequisites did not become ready.");
+                return;
+            }
             if (_scenario == "family-peer")
             {
                 WaitForFamilyPeerCompletion();
@@ -123,7 +138,7 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
         }
         catch (Exception exception)
         {
-            _report.AddFact("exception", exception.ToString());
+            _report?.AddFact("exception", exception.ToString());
             Finish(ScenarioVerdict.Fail, "Diagnostic inspection threw before it could classify the scenario.");
         }
     }
@@ -1109,7 +1124,7 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
         if (!string.Equals(_timeoutCondition, condition, StringComparison.Ordinal))
         {
             _timeoutCondition = condition;
-            _conditionWait = new BoundedWait(RuntimeHarnessReadinessTimeouts.ForCondition(condition));
+            _conditionWait = new BoundedWait(_scenario == "native-input" ? 300 : RuntimeHarnessReadinessTimeouts.ForCondition(condition));
         }
         if (!_conditionWait!.IsTimedOutAt(Time.realtimeSinceStartup, condition)) return;
         SetFact("timeout.condition", condition);

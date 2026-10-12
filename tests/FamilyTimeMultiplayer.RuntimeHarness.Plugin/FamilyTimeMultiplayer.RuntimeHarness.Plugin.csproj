@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../FamilyTimeMultiplayer.RuntimeHarness.Contracts/FamilyTimeMultiplayer.RuntimeHarness.Contracts.csproj" />
+    <ProjectReference Include="../../src/FamilyTimeMultiplayer/FamilyTimeMultiplayer.csproj" />
     <Reference Include="BepInEx"><HintPath>$(BepInExCoreDir)/BepInEx.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="0Harmony"><HintPath>$(BepInExCoreDir)/0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ManagedDir)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
