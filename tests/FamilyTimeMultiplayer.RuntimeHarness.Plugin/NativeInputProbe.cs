@@ -8,6 +8,7 @@ using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Sessions;
 using FamilyTimeMultiplayer.Families;
 using UnityEngine;
+using static FamilyTimeMultiplayer.RuntimeHarness.NativeProbeReflection;
 
 namespace FamilyTimeMultiplayer.RuntimeHarness;
 
@@ -22,6 +23,7 @@ internal sealed class NativeInputProbe
     private readonly Func<object?, string, object?> _value;
     private readonly Action<string, string> _fact;
     private readonly Action<string> _log;
+    private readonly NativeCommandLockProbe? _lockProbe;
     private bool _bootstrapped;
     private bool _familyPrepared;
     private bool _followTested;
@@ -32,17 +34,19 @@ internal sealed class NativeInputProbe
     private Vector3 _targetPosition;
 
     internal NativeInputProbe(Func<string, string, object?> staticValue, Func<object?, string, object?> value,
-        Action<string, string> fact, Action<string> log)
+        Action<string, string> fact, Action<string> log, bool testLocks = false)
     {
         _staticValue = staticValue;
         _value = value;
         _fact = fact;
         _log = log;
+        if (testLocks) _lockProbe = new NativeCommandLockProbe(staticValue, value, fact);
     }
 
     internal void PrepareFixture()
     {
         if (FamilyTimeMultiplayer.MultiplayerController.Current?.Session is not HostSession host) return;
+        _lockProbe?.PrepareHost();
         foreach (var request in host.PendingFamilyRestores)
         {
             host.DecideFamilyRestore(request.PlayerId, HostSession.FamilyRestoreChoice.Restore);
@@ -58,6 +62,7 @@ internal sealed class NativeInputProbe
         if (session == null || (_value(session, "Roster") as IEnumerable)?.Cast<object>().Skip(1).Any() is not true) return null;
         if (_value(session, "Role")?.ToString() == "Host") return SpawnHostAnimal(session);
         if (_value(session, "IsLive") is not true) return null;
+        if (_lockProbe != null) return CheckClientHud() ? _lockProbe.Tick((ClientSession)session) : null;
         return CheckClientLifecycle();
     }
 
@@ -78,6 +83,7 @@ internal sealed class NativeInputProbe
         if ((_value(session, "RemotePlayers") as IEnumerable)?.Cast<object>().Any() is not true) return null;
         if (!PrepareDifferentFamilyCounts()) return null;
         if (!CheckHostHud()) return ScenarioVerdict.Fail;
+        if (_lockProbe != null) return _lockProbe.VerifyHostFamilyGate() ? ScenarioVerdict.Pass : ScenarioVerdict.Fail;
         var isolation = new NativeFamilyIsolationProbe(_staticValue, _value, _fact).Verify();
         if (isolation != ScenarioVerdict.Pass) return isolation;
         object gat = _staticValue("GAT.World", "gat")!;
@@ -322,7 +328,4 @@ internal sealed class NativeInputProbe
         QueryCamera.transform.rotation = rotation;
     }
 
-    private static MethodInfo Method(object target, string name, int parameterCount) =>
-        target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Single(method => method.Name == name && method.GetParameters().Length == parameterCount);
 }

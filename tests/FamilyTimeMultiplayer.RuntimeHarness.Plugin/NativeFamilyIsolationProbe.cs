@@ -2,12 +2,12 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Families;
 using FamilyTimeMultiplayer.RuntimeHarness.Contracts;
 using UnityEngine;
+using static FamilyTimeMultiplayer.RuntimeHarness.NativeProbeReflection;
 
 namespace FamilyTimeMultiplayer.RuntimeHarness;
 
@@ -98,8 +98,4 @@ internal sealed class NativeFamilyIsolationProbe
         else Invoke(hub, "RunAsPlayer", playerId, (Action)(() => operation(follow)));
     }
 
-    private static object? Invoke(object target, string name, params object[] arguments) =>
-        target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-            .Single(method => method.Name == name && method.GetParameters().Length == arguments.Length)
-            .Invoke(target, arguments);
 }
