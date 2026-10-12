@@ -4,6 +4,7 @@ using System.Linq;
 using System.Collections.Generic;
 using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
+using FamilyTimeMultiplayer.Core.Actions;
 using FamilyTimeMultiplayer.Core.Interpolation;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Replication;
@@ -47,6 +48,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private readonly SnapshotInterpolator<ushort> _interpolator;
     private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
     private readonly GenericStateReplicationService<object> _genericStates;
+    private readonly HashSet<Guid> _pendingNativeCommands = new HashSet<Guid>();
     private readonly HashSet<Guid> _pendingGenericActions = new HashSet<Guid>();
     private readonly ClientRigidRegistry _rigids;
     private RigidIndexMapMessage? _pendingRigidMap;
@@ -537,7 +539,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         if (_phase == ClientPhase.Live)
         {
             SendCurrentPose(FamilyTimeMultiplayer.Game.GameClock.Now);
-            _connection!.Send(intent);
+            _pendingNativeCommands.Add(RequestGenericAction(NativeCommandActionAdapter.ActionId, NativeCommandActionAdapter.SchemaVersion, null, 0, MessageCodec.Encode(intent)));
             _log.LogInfo($"[Client] command {intent.Kind}/{intent.TargetKind} sent to host");
         }
     }
@@ -626,6 +628,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
 
     private void NotifyGenericActionCompleted(GenericActionResultMessage result)
     {
+        if (_pendingNativeCommands.Remove(result.RequestId) && result.Outcome != GenericActionOutcome.Executed)
+            UI.PlayerNotice.Show($"Command {result.Outcome}: {result.Detail}");
         try { GenericActionCompleted?.Invoke(result); }
         catch (Exception exception) { _log.LogWarning($"[Client] generic action result callback failed: {exception.Message}"); }
     }

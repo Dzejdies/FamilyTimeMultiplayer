@@ -190,7 +190,7 @@ public sealed class RemoteCommander : IRemoteCommanderIdentity, IDisposable
         }
     }
 
-    private void ValidateIntent(CommandIntentMessage intent, HostRigidRegistry rigids)
+    internal void ValidateIntent(CommandIntentMessage intent, HostRigidRegistry rigids)
     {
         if (intent.Kind == CommandIntentKind.FollowPressed || intent.Kind == CommandIntentKind.FollowReleased) return;
         if (intent.Kind == CommandIntentKind.PickupSweepStopped)

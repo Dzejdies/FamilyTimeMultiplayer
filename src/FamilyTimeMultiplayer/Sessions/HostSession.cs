@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
+using FamilyTimeMultiplayer.Core.Actions;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Replication;
 using FamilyTimeMultiplayer.Core.Safety;
@@ -149,6 +150,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
             _commands = new HostCommandHub(log);
             _genericActions = new GenericActionBridge<object>(_entityRegistry, (playerId, callback) => _commands.RunAsPlayer(playerId, callback));
             _genericActionEndpoint = new GenericActionSessionEndpoint<object>(_genericActions);
+            _genericActions.Register(new NativeCommandActionAdapter(ExecuteNativeCommand, AuthorizeNativeCommand));
             if (familyMode == Core.Protocol.FamilyMode.Separate)
             {
                 HostFamilyService.EnsureStarted(log, _hostName);
@@ -577,10 +579,31 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         }
     }
 
+    private string? AuthorizeNativeCommand(int playerId, CommandIntentMessage intent)
+    {
+        if (!_addons.AllowsNativeAction(playerId, intent)) return "Current addon state does not permit this action.";
+        try { _commands.ValidateIntent(playerId, intent, _rigids); return null; }
+        catch (InvalidDataException exception) { return exception.Message; }
+    }
+
+    private void ExecuteNativeCommand(int playerId, CommandIntentMessage intent)
+    {
+        Peer peer = _peers.Single(candidate => candidate.PlayerId == playerId);
+        _commands.Handle(playerId, intent, _rigids, result => SendCommandFeedback(peer, result));
+    }
+
+    private void SendCommandFeedback(Peer peer, CommandResult result)
+    {
+        if (!peer.Connection.IsOpen || peer.Phase != PeerPhase.Live) return;
+        (int available, int total) = PoolFor(peer);
+        peer.LastPool = (available, total);
+        peer.Connection.Send(new CommandFeedbackMessage(available, total, result.Outcome, result.Detail));
+    }
+
     private void HandlePeerMessage(Peer peer, INetMessage message)
     {
         if (peer.TransferId > 1 && peer.Phase != PeerPhase.Live && message is WaterViewMessage or CommandIntentMessage or HoldMessage or ToolEditsMessage or MamaToggleMessage or BedRequestMessage) return;
-        if (peer.Phase == PeerPhase.Live && !_addons.AllowsNativeAction(peer.PlayerId, message))
+        if (peer.Phase == PeerPhase.Live && !(message is GenericActionRequestMessage native && native.ActionId == NativeCommandActionAdapter.ActionId) && !_addons.AllowsNativeAction(peer.PlayerId, message))
         {
             RefuseAddonRestrictedAction(peer, message);
             return;
@@ -637,12 +660,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                 case ClientPoseMessage _:
                     break;
                 case CommandIntentMessage intent when peer.Phase == PeerPhase.Live:
-                    _commands.Handle(peer.PlayerId, intent, _rigids, result =>
-                    {
-                        (int available, int total) = PoolFor(peer);
-                        peer.LastPool = (available, total);
-                        peer.Connection.Send(new CommandFeedbackMessage(available, total, result.Outcome, result.Detail));
-                    });
+                    ExecuteNativeCommand(peer.PlayerId, intent);
                     break;
                 case HoldMessage hold when peer.Phase == PeerPhase.Live:
                     HandleHold(peer, hold);

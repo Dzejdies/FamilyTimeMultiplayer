@@ -62,6 +62,13 @@ public sealed class HostCommandHub : IDisposable
         using (CommanderContext.Enter(commander)) action();
     }
 
+    internal void ValidateIntent(int playerId, CommandIntentMessage intent, HostRigidRegistry rigids)
+    {
+        if (!_commanders.TryGetValue(playerId, out RemoteCommander commander))
+            throw new System.IO.InvalidDataException("Player has no live native commander.");
+        commander.ValidateIntent(intent, rigids);
+    }
+
     public void Handle(int playerId, CommandIntentMessage intent, HostRigidRegistry rigids, Action<CommandResult> report)
     {
         if (!_commanders.TryGetValue(playerId, out RemoteCommander commander))
