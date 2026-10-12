@@ -49,6 +49,8 @@ public sealed class NativeCommandActionAdapter : IGenericActionAdapter<object>
 
     public static NetworkEntityId? TargetIdentity(CommandIntentMessage intent, long generation)
     {
+        if (intent.IsCommandLock && intent.TargetKind != CommandTargetKind.Agent)
+            throw new InvalidDataException("Command lock requires a versioned agent target.");
         string? kind = intent.TargetKind switch { CommandTargetKind.Agent => "agent", CommandTargetKind.Rigid => "rigid", _ => null };
         if (kind == null) return null;
         if (intent.RigidNetId < 0) throw new InvalidDataException("Native command entity identity is invalid.");

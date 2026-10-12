@@ -84,6 +84,39 @@ public sealed class NativeCommandActionTests
         Assert.Equal(1, workerOrders);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExplicitCommandLockStateSurvivesWireRoundTrip(bool locked)
+    {
+        var intent = CommandIntentMessage.ToggleCommandLock(12);
+        byte[] legacyFields = MessageCodec.Encode(intent);
+        byte[] payload = new byte[legacyFields.Length + 1];
+        Array.Copy(legacyFields, payload, legacyFields.Length);
+        payload[1] = 7; // SetCommandLock wire kind; independent of the production enum.
+        payload[payload.Length - 1] = locked ? (byte)1 : (byte)0;
+
+        var decoded = Assert.IsType<CommandIntentMessage>(MessageCodec.Decode(payload));
+
+        Assert.Equal(payload, MessageCodec.Encode(decoded));
+        Assert.Equal(12, decoded.RigidNetId);
+        Assert.Equal(CommandTargetKind.Agent, decoded.TargetKind);
+    }
+
+    [Theory]
+    [InlineData(CommandIntentKind.CommandLock)]
+    [InlineData(CommandIntentKind.SetCommandLock)]
+    public void CommandLockCannotOmitItsVersionedAgentTarget(CommandIntentKind kind)
+    {
+        int mutations = 0;
+        var bridge = CreateBridge((_, _) => mutations++);
+        var intent = new CommandIntentMessage(kind, CommandTargetKind.None, 12, 0, 0, string.Empty, NetVector3.Zero);
+        var request = new GenericActionRequestMessage(NativeCommandActionAdapter.ActionId, 1, Guid.NewGuid(), 1, null, 0,
+            MessageCodec.Encode(intent));
+        Assert.Equal(GenericActionOutcome.Rejected, bridge.Execute(7, "family-a", request).Outcome);
+        Assert.Equal(0, mutations);
+    }
+
     private static GenericActionRequestMessage Request(CommandIntentMessage intent) =>
         new(NativeCommandActionAdapter.ActionId, 1, Guid.NewGuid(), 1, new NetworkEntityId(1, new EntityKind(intent.TargetKind == CommandTargetKind.Agent ? "agent" : "rigid"), 12), 1, MessageCodec.Encode(intent));
 

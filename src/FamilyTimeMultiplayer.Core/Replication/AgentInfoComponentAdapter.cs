@@ -23,7 +23,7 @@ public sealed class AgentInfoComponentAdapter : IEntityComponentAdapter<object>
     public byte[] Capture(object entity)
     {
         var payload = new byte[sizeof(uint)];
-        BinaryPrimitives.WriteUInt32LittleEndian(payload, _captured[RequireIndex(entity)]);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, _captured[NativeAgentIndex.Require(entity)]);
         return payload;
     }
 
@@ -37,9 +37,7 @@ public sealed class AgentInfoComponentAdapter : IEntityComponentAdapter<object>
     {
         if (schemaVersion != Descriptor.SchemaVersion || !TryValidate(state, out _))
             throw new ArgumentException("Invalid agent info component state.", nameof(state));
-        _applyNativeInfo(RequireIndex(entity), BinaryPrimitives.ReadUInt32LittleEndian(state.Span));
+        _applyNativeInfo(NativeAgentIndex.Require(entity), BinaryPrimitives.ReadUInt32LittleEndian(state.Span));
     }
 
-    private static ushort RequireIndex(object entity) => entity is ushort index
-        ? index : throw new ArgumentException("Agent info requires a bound native agent index.", nameof(entity));
 }

@@ -714,6 +714,7 @@ public enum CommandIntentKind : byte
     CommandLock = 4,
     PickupSweepStarted = 5,
     PickupSweepStopped = 6,
+    SetCommandLock = 7,
 }
 
 public enum CommandTargetKind : byte
@@ -729,8 +730,9 @@ public enum CommandTargetKind : byte
 
 public sealed class CommandIntentMessage : INetMessage
 {
-    public CommandIntentMessage(CommandIntentKind kind, CommandTargetKind targetKind, int rigidNetId, int propCellX, int propCellZ, string propName, NetVector3 point)
+    public CommandIntentMessage(CommandIntentKind kind, CommandTargetKind targetKind, int rigidNetId, int propCellX, int propCellZ, string propName, NetVector3 point, bool commandLocked = false)
     {
+        CommandLocked = commandLocked;
         Kind = kind;
         TargetKind = targetKind;
         RigidNetId = rigidNetId;
@@ -764,6 +766,9 @@ public sealed class CommandIntentMessage : INetMessage
     public static CommandIntentMessage ToggleCommandLock(ushort hostStableIndex) =>
         new CommandIntentMessage(CommandIntentKind.CommandLock, CommandTargetKind.Agent, hostStableIndex, 0, 0, string.Empty, NetVector3.Zero);
 
+    public static CommandIntentMessage SetCommandLock(ushort hostStableIndex, bool locked) =>
+        new(CommandIntentKind.SetCommandLock, CommandTargetKind.Agent, hostStableIndex, 0, 0, string.Empty, NetVector3.Zero, locked);
+
     public static CommandIntentMessage PickupSweep(int rigidNetId, bool started) =>
         new CommandIntentMessage(started ? CommandIntentKind.PickupSweepStarted : CommandIntentKind.PickupSweepStopped, started ? CommandTargetKind.Rigid : CommandTargetKind.None, started ? rigidNetId : -1, 0, 0, string.Empty, NetVector3.Zero);
 
@@ -775,6 +780,8 @@ public sealed class CommandIntentMessage : INetMessage
     public int PropCellZ { get; }
     public string PropName { get; }
     public NetVector3 Point { get; }
+    public bool CommandLocked { get; }
+    public bool IsCommandLock => Kind is CommandIntentKind.CommandLock or CommandIntentKind.SetCommandLock;
 
     public void Write(BinaryWriter writer)
     {
@@ -785,13 +792,14 @@ public sealed class CommandIntentMessage : INetMessage
         writer.Write(PropCellZ);
         writer.Write(PropName);
         Point.Write(writer);
+        if (Kind == CommandIntentKind.SetCommandLock) writer.Write(CommandLocked);
     }
 
     public static CommandIntentMessage Read(BinaryReader reader)
     {
         var kind = (CommandIntentKind)reader.ReadByte();
         var target = (CommandTargetKind)reader.ReadByte();
-        if (kind < CommandIntentKind.FollowPressed || kind > CommandIntentKind.PickupSweepStopped)
+        if (kind < CommandIntentKind.FollowPressed || kind > CommandIntentKind.SetCommandLock)
         {
             throw new InvalidDataException($"Unknown command intent {(byte)kind}.");
         }
@@ -799,7 +807,15 @@ public sealed class CommandIntentMessage : INetMessage
         {
             throw new InvalidDataException($"Unknown command target {(byte)target}.");
         }
-        return new CommandIntentMessage(kind, target, reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), ProtocolGuards.ReadText(reader, 128, "prop name"), NetVector3.Read(reader));
+        int entity = reader.ReadInt32();
+        int cellX = reader.ReadInt32();
+        int cellZ = reader.ReadInt32();
+        string name = ProtocolGuards.ReadText(reader, 128, "prop name");
+        NetVector3 point = NetVector3.Read(reader);
+        bool locked = kind == CommandIntentKind.SetCommandLock && FamilyTimeMultiplayer.Core.Commands.CommandLockState.Decode(reader.ReadByte());
+        if (kind == CommandIntentKind.SetCommandLock && target != CommandTargetKind.Agent)
+            throw new InvalidDataException("Command lock state requires an agent target.");
+        return new CommandIntentMessage(kind, target, entity, cellX, cellZ, name, point, locked);
     }
 }
 
