@@ -66,6 +66,7 @@ public sealed class RuntimeHarnessPlugin : BaseUnityPlugin
         {
             typeof(Application).GetProperty("runInBackground")?.GetSetMethod()?.Invoke(null, new object[] { true });
             QualitySettings.SetQualityLevel(0, true);
+            typeof(Application).GetProperty("targetFrameRate")?.GetSetMethod()?.Invoke(null, new object[] { 60 });
             FamilyTimeMultiplayer.Addons.SessionAddonRegistry.Register(new ReplicationProbeAddon("runtime.shared", message => Logger.LogInfo($"[AddonProbe] {message}")));
             if (arguments.Contains("-ftmp-harness-host-only-addon"))
                 FamilyTimeMultiplayer.Addons.SessionAddonRegistry.Register(new ReplicationProbeAddon("runtime.host-only", message => Logger.LogInfo($"[AddonProbe] {message}")));
