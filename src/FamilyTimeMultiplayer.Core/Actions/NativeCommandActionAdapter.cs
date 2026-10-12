@@ -20,11 +20,11 @@ public sealed class NativeCommandActionAdapter : IGenericActionAdapter<object>
     }
 
     public GenericActionDescriptor Descriptor { get; } =
-        new(ActionId, SchemaVersion, Array.Empty<EntityKind>(), requiresTarget: false);
+        new(ActionId, SchemaVersion, new[] { new EntityKind("agent"), new EntityKind("rigid") }, requiresTarget: false);
 
     public bool TryValidate(ReadOnlyMemory<byte> payload, out string error)
     {
-        try { Decode(payload); error = string.Empty; return true; }
+        try { TargetIdentity(Decode(payload), 1); error = string.Empty; return true; }
         catch (InvalidDataException exception) { error = exception.Message; return false; }
         catch (IOException exception) { error = exception.Message; return false; }
         catch (ArgumentException exception) { error = exception.Message; return false; }
@@ -32,12 +32,28 @@ public sealed class NativeCommandActionAdapter : IGenericActionAdapter<object>
 
     public bool Authorize(GenericActionContext<object> context, ReadOnlyMemory<byte> payload, out string error)
     {
-        error = _authorize(context.AuthenticatedPlayerId, Decode(payload)) ?? string.Empty;
+        CommandIntentMessage intent = Decode(payload);
+        bool hasEntityTarget = intent.TargetKind is CommandTargetKind.Agent or CommandTargetKind.Rigid;
+        if (hasEntityTarget != context.TargetIdentity.HasValue ||
+            context.TargetIdentity is NetworkEntityId identity && TargetIdentity(intent, identity.WorldGeneration) != identity)
+        {
+            error = "Native command target must match its versioned entity envelope.";
+            return false;
+        }
+        error = _authorize(context.AuthenticatedPlayerId, intent) ?? string.Empty;
         return error.Length == 0;
     }
 
     public void Execute(GenericActionContext<object> context, ReadOnlyMemory<byte> payload) =>
         _execute(context.AuthenticatedPlayerId, Decode(payload));
+
+    public static NetworkEntityId? TargetIdentity(CommandIntentMessage intent, long generation)
+    {
+        string? kind = intent.TargetKind switch { CommandTargetKind.Agent => "agent", CommandTargetKind.Rigid => "rigid", _ => null };
+        if (kind == null) return null;
+        if (intent.RigidNetId < 0) throw new InvalidDataException("Native command entity identity is invalid.");
+        return new NetworkEntityId(generation, new EntityKind(kind), (ulong)intent.RigidNetId);
+    }
 
     public static CommandIntentMessage Decode(ReadOnlyMemory<byte> payload) =>
         MessageCodec.Decode(payload.ToArray()) as CommandIntentMessage

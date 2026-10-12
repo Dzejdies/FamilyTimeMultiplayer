@@ -7,6 +7,8 @@ using System.Net;
 using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Actions;
+using FamilyTimeMultiplayer.Core.Compatibility;
+using FamilyTimeMultiplayer.Addons;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Replication;
 using FamilyTimeMultiplayer.Core.Safety;
@@ -19,7 +21,7 @@ using UnityEngine;
 
 namespace FamilyTimeMultiplayer.Sessions;
 
-public sealed class HostSession : ISession, IHostReplicationObserver, INightParticipants
+public sealed class HostSession : ISession, IHostReplicationObserver, INightParticipants, IAddonReplicationEndpoint
 {
     private const int MaxQueuedFramesBeforeSkippingSnapshots = 8;
     private const double DayStateInterval = 1.0;
@@ -88,6 +90,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     private readonly AgentSnapshotSampler _sampler = new AgentSnapshotSampler();
     private readonly RemoteAvatarService _avatars = new RemoteAvatarService();
     private readonly DayStateBridge _day = new DayStateBridge();
+    private readonly ReplicationCapabilities _replicationCapabilities = new(SessionAddonRegistry.Descriptors);
     private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
     private readonly GenericStateReplicationService<object> _genericStates;
     private readonly GenericActionBridge<object> _genericActions;
@@ -102,6 +105,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     private HostMamaService? Mamas => Families?.Mamas;
     private readonly HostNightCoordinator _night;
     private readonly Holds.HostHoldRegistry _holds;
+    private readonly AgentInfoComponentAdapter _agentInfoState = new((_, _) => throw new InvalidOperationException("Host cannot apply remote agent info."));
     private readonly AgentInfoSampler _info = new AgentInfoSampler();
     private readonly HostWaterSampler _water;
     private int _waterRotation;
@@ -125,6 +129,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         _agentEntities = new LegacyAgentIdentityAdapter(_entityRegistry);
         _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: true);
+        _genericStates.RegisterAdapter(_agentInfoState);
         _rigids = new HostRigidRegistry(_entityRegistry);
         _familyMode = familyMode;
         _log = log;
@@ -159,7 +164,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
             _night = new HostNightCoordinator(log, this, PlayerRosterMessage.HostPlayerId, _hostName);
             ReplicationGate.EnterHost(this);
             _rosterDirty = true;
-            _addons = Addons.SessionAddonRegistry.Start(true, () => LocalPlayerId, () => _addonWorldGeneration, SendAddon);
+            _addons = Addons.SessionAddonRegistry.Start(true, () => LocalPlayerId, () => _addonWorldGeneration, SendAddon, this);
             Status = $"Hosting on port {_listener.Port} ({familyMode} family)";
             _log.LogInfo($"[Host] listening on 0.0.0.0:{_listener.Port}");
         }
@@ -263,7 +268,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         }
         if (_peers.Any(p => p.Phase == PeerPhase.Live))
         {
-            _info.Tick(now, SendToLive);
+            _info.Tick(now, PublishAgentInfo);
         }
         StreamSnapshots(now);
         StreamDayState(now);
@@ -291,6 +296,41 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         SendWorldEvent(new AgentSpawnMessage(spawns));
     }
 
+    bool IAddonReplicationEndpoint.IsHost => true;
+    GenericEntityRegistry<object> IAddonReplicationEndpoint.Entities => _entityRegistry;
+    bool IAddonReplicationEndpoint.IsApplyingRemoteState => _genericStates.IsApplyingRemoteState;
+    void IAddonReplicationEndpoint.EntityAvailable(NetworkEntityId identity) => _genericStates.OnEntityAvailable(identity);
+
+    void IAddonReplicationEndpoint.RegisterAddonState(string addonId, IEntityComponentAdapter<object> adapter)
+    {
+        _replicationCapabilities.RegisterState(addonId, adapter.Descriptor);
+        RegisterGenericStateAdapter(adapter);
+    }
+
+    void IAddonReplicationEndpoint.RegisterAddonAction(string addonId, IGenericActionAdapter<object> adapter)
+    {
+        _replicationCapabilities.RegisterAction(addonId, adapter.Descriptor);
+        RegisterGenericAction(adapter);
+    }
+
+    Guid IAddonReplicationEndpoint.RequestAddonAction(string addonId, string actionId, int schemaVersion,
+        NetworkEntityId? target, ulong lifecycleRevision, byte[] payload, Action<GenericActionResultMessage> completed) =>
+        throw new InvalidOperationException("Host adapters execute their local native actions directly and publish the results.");
+
+    private void PublishAgentInfo(AgentInfoMessage message)
+    {
+        var states = new List<GenericEntityStateMessage>();
+        foreach (AgentInfoEntry entry in message.Agents)
+        {
+            var identity = new NetworkEntityId(_entityRegistry.WorldGeneration, LegacyAgentIdentityAdapter.Kind, entry.HostStableIndex);
+            if (!_entityRegistry.TryGetLocal(identity, out object local)) continue;
+            _agentInfoState.SetCapturedInfo((ushort)local, entry.Info);
+            GenericEntityStateMessage? state = _genericStates.Publish(identity, local, AgentInfoComponentAdapter.AdapterId);
+            if (state != null) states.Add(state);
+        }
+        foreach (GenericEntityStateBatchMessage batch in GenericEntityStateBatchMessage.CreateBatches(states)) SendWorldEvent(batch);
+    }
+
     public void RegisterGenericStateAdapter(IEntityComponentAdapter<object> adapter) =>
         _genericStates.RegisterAdapter(adapter);
 
@@ -315,6 +355,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
         {
             if (!handle.isNull)
             {
+                _agentInfoState.Forget(handle.stableIndex);
                 _agentEntities.Unbind(handle.stableIndex);
                 ForgetGenericEntityState(LegacyAgentIdentityAdapter.Kind, handle.stableIndex);
             }
@@ -351,6 +392,8 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         _addonWorldGeneration++;
         _entityRegistry.ChangeWorldGeneration(_addonWorldGeneration);
+        _agentInfoState.Reset();
+        _info.SendEverythingNext();
         _addons.Reload();
         HostPlayerAuthority.Remove(LocalPlayerId);
         _water.Reset();
@@ -419,6 +462,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         foreach (Peer peer in _peers)
         {
+            if (message is GenericEntityStateMessage state && !_replicationCapabilities.SupportsState(peer.SharedAddons, state)) continue;
             if (peer.Backlog != null)
             {
                 peer.BacklogBytes += MessageCodec.Encode(message).Length;
@@ -500,7 +544,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                 if (message is not SignedClientMessage signed) throw new InvalidDataException("Authenticated client packets must be signed.");
                 message = peer.ClientVerifier!.Decode(signed);
             }
-            int cost = message is AddonMessage addon ? 256 + addon.Payload.Length / 64 : message is ToolEditsMessage tool ? 64 + tool.Edits.Edits.Count * 64 : message is WorldEditMessage world ? 64 + world.Edits.Count * 16 : message is CommandIntentMessage ? 256 : 8;
+            int cost = message is AddonMessage addon ? 256 + addon.Payload.Length / 64 : message is ToolEditsMessage tool ? 64 + tool.Edits.Edits.Count * 64 : message is WorldEditMessage world ? 64 + world.Edits.Count * 16 : message is GenericActionRequestMessage generic ? 256 + generic.Payload.Length / 64 : message is CommandIntentMessage ? 256 : 8;
             if (!peer.Work.TrySpend(cost, peer.LastReceivedAt)) throw new InvalidDataException("Peer work rate limit exceeded.");
             try
             {
@@ -623,10 +667,16 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                     break;
                 case AddonMessage _:
                     break;
+                case GenericEntityStateBatchMessage:
                 case GenericEntityStateMessage:
                     Reject(peer, "Only the host may publish authoritative component state.");
                     break;
                 case GenericActionRequestMessage action when peer.Phase == PeerPhase.Live:
+                    if (!_replicationCapabilities.SupportsAction(peer.SharedAddons, action.ActionId))
+                    {
+                        peer.Connection.Send(new GenericActionResultMessage(action.RequestId, GenericActionOutcome.Rejected, "This action capability was not negotiated."));
+                        break;
+                    }
                     GenericActionResultMessage actionResult = _genericActionEndpoint.Receive(
                         new AuthenticatedActionPeer(peer.PlayerId, peer.Owner, peer.Authenticated, peer.Phase == PeerPhase.Live), action);
                     if (peer.Connection.IsOpen) peer.Connection.Send(actionResult);
@@ -851,7 +901,9 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
     {
         List<INetMessage> backlog = peer.Backlog ?? new List<INetMessage>();
         peer.Backlog = null;
-        foreach (GenericEntityStateMessage state in _genericStates.CaptureSnapshot()) peer.Connection.Send(state);
+        foreach (GenericEntityStateBatchMessage batch in GenericEntityStateBatchMessage.CreateBatches(
+            _genericStates.CaptureSnapshot().Where(state => _replicationCapabilities.SupportsState(peer.SharedAddons, state))))
+            peer.Connection.Send(batch);
         foreach (INetMessage message in backlog)
         {
             peer.Connection.Send(message);
@@ -1019,6 +1071,7 @@ public sealed class HostSession : ISession, IHostReplicationObserver, INightPart
                 if (!peer.Connection.IsOpen || transferId != peer.TransferId) yield break;
                 peer.Connection.Send(new WorldChunkMessage(offset, chunk));
             }
+            peer.Connection.Send(new EntityLifecycleMapMessage(_entityRegistry.WorldGeneration, _entityRegistry.CaptureLifecycle()));
             peer.Connection.Send(new WorldCompleteMessage(Crc32.Compute(world)));
             peer.Connection.Send(rigidIndexMap);
             peer.Phase = PeerPhase.AwaitingReady;

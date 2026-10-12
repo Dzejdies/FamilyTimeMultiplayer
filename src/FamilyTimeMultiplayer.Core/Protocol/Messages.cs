@@ -52,6 +52,8 @@ public enum MessageType : byte
     GenericEntityState = 43,
     GenericActionRequest = 44,
     GenericActionResult = 45,
+    EntityLifecycleMap = 46,
+    GenericEntityStateBatch = 47,
 }
 
 public interface INetMessage

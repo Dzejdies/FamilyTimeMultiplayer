@@ -11,7 +11,6 @@ public sealed class LegacyAgentIdentityAdapter
         (new EntityStateDomain("lifecycle"), new ReplicationOwner("legacy.agent.lifecycle")),
         (new EntityStateDomain("transform"), new ReplicationOwner("legacy.agent.snapshots")),
         (new EntityStateDomain("family"), new ReplicationOwner("legacy.family-service")),
-        (new EntityStateDomain("appearance"), new ReplicationOwner("legacy.agent-info")),
         (new EntityStateDomain("animation"), new ReplicationOwner("legacy.animation-relay")),
         (new EntityStateDomain("name"), new ReplicationOwner("legacy.world-edits")),
     };

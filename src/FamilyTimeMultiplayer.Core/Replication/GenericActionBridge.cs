@@ -7,11 +7,12 @@ namespace FamilyTimeMultiplayer.Core.Replication;
 
 public sealed class GenericActionContext<TLocal>
 {
-    public GenericActionContext(int authenticatedPlayerId, string owner, TLocal? target)
-    { AuthenticatedPlayerId = authenticatedPlayerId; Owner = owner; Target = target; }
+    public GenericActionContext(int authenticatedPlayerId, string owner, TLocal? target, NetworkEntityId? targetIdentity = null)
+    { AuthenticatedPlayerId = authenticatedPlayerId; Owner = owner; Target = target; TargetIdentity = targetIdentity; }
     public int AuthenticatedPlayerId { get; }
     public string Owner { get; }
     public TLocal? Target { get; }
+    public NetworkEntityId? TargetIdentity { get; }
 }
 
 public sealed class GenericActionDescriptor
@@ -104,7 +105,7 @@ public sealed class GenericActionBridge<TLocal> where TLocal : notnull
         }
         else if (descriptor.RequiresTarget) return Result(request, GenericActionOutcome.Rejected, "Action requires a target.");
         if (!adapter.TryValidate(request.Payload, out string validationError)) return Result(request, GenericActionOutcome.Rejected, validationError);
-        var context = new GenericActionContext<TLocal>(playerId, owner, target);
+        var context = new GenericActionContext<TLocal>(playerId, owner, target, request.Target);
         if (!adapter.Authorize(context, request.Payload, out string authorizationError)) return Result(request, GenericActionOutcome.Rejected, authorizationError);
         try { _executionScope(playerId, () => adapter.Execute(context, request.Payload)); return Result(request, GenericActionOutcome.Executed); }
         catch (Exception exception) { return Result(request, GenericActionOutcome.Failed, exception.Message); }

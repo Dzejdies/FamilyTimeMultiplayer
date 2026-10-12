@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using BepInEx.Logging;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Actions;
+using FamilyTimeMultiplayer.Core.Compatibility;
+using FamilyTimeMultiplayer.Addons;
 using FamilyTimeMultiplayer.Core.Interpolation;
 using FamilyTimeMultiplayer.Core.Protocol;
 using FamilyTimeMultiplayer.Core.Replication;
@@ -15,7 +17,7 @@ using UnityEngine;
 
 namespace FamilyTimeMultiplayer.Sessions;
 
-public sealed class ClientSession : ISession, IClientCommandSink, Families.IClientBedSink, Holds.IClientHoldSink
+public sealed class ClientSession : ISession, IClientCommandSink, IAddonReplicationEndpoint, Families.IClientBedSink, Holds.IClientHoldSink
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
     private const int MaxConnectAttempts = 15;
@@ -48,6 +50,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private readonly SnapshotInterpolator<ushort> _interpolator;
     private readonly GenericEntityRegistry<object> _entityRegistry = new GenericEntityRegistry<object>(1);
     private readonly GenericStateReplicationService<object> _genericStates;
+    private readonly Dictionary<Guid, Action<GenericActionResultMessage>> _addonActionCallbacks = new();
+    private readonly ReplicationCapabilities _replicationCapabilities = new(SessionAddonRegistry.Descriptors);
     private readonly HashSet<Guid> _pendingNativeCommands = new HashSet<Guid>();
     private readonly HashSet<Guid> _pendingGenericActions = new HashSet<Guid>();
     private readonly ClientRigidRegistry _rigids;
@@ -62,6 +66,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     private INetConnection? _connection;
     private ClientPhase _phase = ClientPhase.Connecting;
     private IncomingWorldFile? _incomingWorld;
+    private bool _lifecycleMapReceived;
     private int _worldLoadGeneration;
     private WelcomeMessage? _welcome;
     private double _nextPoseTime;
@@ -78,6 +83,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _endpointDescription = target.Description;
         _interpolator = new SnapshotInterpolator<ushort>(settings.InterpolationDelaySeconds);
         _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: false);
+        _genericStates.RegisterAdapter(new AgentInfoComponentAdapter(ApplyNativeAgentInfo));
         _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds, _entityRegistry);
         _registry = new ReplicatedAgentRegistry(_puppeteer, _entityRegistry);
         _mamas = new Families.ClientMamaMirror(log);
@@ -103,6 +109,48 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     public ushort AvatarStableIndex => _welcome?.AvatarStableIndex ?? ushort.MaxValue;
 
     public AgentIdentityMap Identities => _registry.Identities;
+
+    bool IAddonReplicationEndpoint.IsHost => false;
+    GenericEntityRegistry<object> IAddonReplicationEndpoint.Entities => _entityRegistry;
+    bool IAddonReplicationEndpoint.IsApplyingRemoteState => _genericStates.IsApplyingRemoteState;
+    void IAddonReplicationEndpoint.EntityAvailable(NetworkEntityId identity) => ApplyPendingGenericState(identity);
+    void IAddonReplicationEndpoint.ForgetGenericEntityState(NetworkEntityId identity) => _genericStates.ForgetEntity(identity);
+    bool IAddonReplicationEndpoint.PublishGenericState(NetworkEntityId identity, object entity, string adapterId) =>
+        throw new InvalidOperationException("Only the host may publish component state.");
+    void IAddonReplicationEndpoint.RegisterAddonAction(string addonId, IGenericActionAdapter<object> adapter) =>
+        throw new InvalidOperationException("Register action execution handlers on the host.");
+
+    void IAddonReplicationEndpoint.RegisterAddonState(string addonId, IEntityComponentAdapter<object> adapter)
+    {
+        _replicationCapabilities.RegisterState(addonId, adapter.Descriptor);
+        RegisterGenericStateAdapter(adapter);
+    }
+
+    Guid IAddonReplicationEndpoint.RequestAddonAction(string addonId, string actionId, int schemaVersion,
+        NetworkEntityId? target, ulong lifecycleRevision, byte[] payload, Action<GenericActionResultMessage> completed)
+    {
+        _replicationCapabilities.RequireScopedName(addonId, actionId);
+        if (!_sharedAddons.Any(addon => addon.Id == addonId)) throw new InvalidOperationException("Host does not support this optional addon.");
+        if (completed == null) throw new ArgumentNullException(nameof(completed));
+        SendCurrentPose(GameClock.Now);
+        Guid requestId = RequestGenericAction(actionId, schemaVersion, target, lifecycleRevision, payload);
+        _addonActionCallbacks.Add(requestId, completed);
+        return requestId;
+    }
+
+    private void ApplyGenericState(GenericEntityStateMessage state)
+    {
+        if (!_replicationCapabilities.SupportsState(_sharedAddons, state)) throw new InvalidDataException("Host sent component state for an unnegotiated addon.");
+        GenericStateApplyResult result = _genericStates.Apply(state);
+        if (result.Status is GenericStateApplyStatus.Rejected or GenericStateApplyStatus.ResyncRequired)
+            throw new InvalidOperationException(result.Error);
+    }
+
+    private static void ApplyNativeAgentInfo(ushort localIndex, uint info)
+    {
+        if (localIndex == LocalPlayer.PossessedHandle.stableIndex) return;
+        GatInterop.RequireGat().SetInstanceInfo(GatInterop.ToHandle(localIndex), GatInterop.CreateInstanceInfo(AgentInfoBits.ForPuppet(info)));
+    }
 
     public void RegisterGenericStateAdapter(IEntityComponentAdapter<object> adapter) =>
         _genericStates.RegisterAdapter(adapter);
@@ -267,10 +315,18 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 if (!_sharedAddons.Any(capability => capability.Id == addon.AddonId)) throw new InvalidDataException("Host sent an addon that was not negotiated.");
                 if (_phase == ClientPhase.Live && addon.WorldGeneration == _welcome!.WorldGeneration) _addons!.Receive(PlayerRosterMessage.HostPlayerId, addon);
                 break;
+            case EntityLifecycleMapMessage lifecycle when _phase == ClientPhase.ReceivingWorld:
+                if (lifecycle.WorldGeneration != _welcome!.WorldGeneration) throw new InvalidDataException("Lifecycle snapshot belongs to another world.");
+                if (_lifecycleMapReceived) throw new InvalidDataException("Duplicate entity lifecycle snapshot.");
+                _lifecycleMapReceived = true;
+                _entityRegistry.PrepareSnapshot(lifecycle.WorldGeneration, lifecycle.Bindings);
+                _genericStates.ResetForSnapshot();
+                break;
+            case GenericEntityStateBatchMessage batch when _phase == ClientPhase.Live:
+                foreach (GenericEntityStateMessage state in batch.States) ApplyGenericState(state);
+                break;
             case GenericEntityStateMessage state when _phase == ClientPhase.Live:
-                GenericStateApplyResult result = _genericStates.Apply(state);
-                if (result.Status == GenericStateApplyStatus.Rejected || result.Status == GenericStateApplyStatus.ResyncRequired)
-                    throw new InvalidOperationException(result.Error);
+                ApplyGenericState(state);
                 break;
             case GenericActionResultMessage actionResult when _phase == ClientPhase.Live:
                 if (_pendingGenericActions.Remove(actionResult.RequestId)) NotifyGenericActionCompleted(actionResult);
@@ -305,6 +361,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 Status = $"Downloading world {_incomingWorld.Progress:P0}";
                 break;
             case WorldCompleteMessage complete when _phase == ClientPhase.ReceivingWorld:
+                if (!_lifecycleMapReceived) throw new InvalidDataException("World transfer did not include an authoritative lifecycle snapshot.");
                 _incomingWorld!.Complete(complete);
                 _incomingWorld = null;
                 _phase = ClientPhase.WaitingToLoad;
@@ -357,9 +414,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
                 Families.LocalFamilyView.SetMembers(family.Members);
                 Families.FamilyHud.Set(new Families.FamilyHudCounts(family.Children, family.Hungry, family.NotSleeping));
                 break;
-            case AgentInfoMessage info when _phase == ClientPhase.Live:
-                AgentVisualsApplier.ApplyInfo(info, _registry.Identities, AvatarStableIndex);
-                break;
+
             case AnimationEventsMessage animations when _phase == ClientPhase.Live:
                 AgentVisualsApplier.ApplyAnimations(animations, _registry.Identities);
                 break;
@@ -426,6 +481,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         }
         _incomingWorld?.Dispose();
         _pendingRigidMap = null;
+        _lifecycleMapReceived = false;
         ClientCommandBridge.Detach();
         Families.ClientNight.Detach();
         Holds.ClientHolds.Detach();
@@ -434,7 +490,8 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         _mamas.Clear();
         _rigids.ReleaseAll();
         _registry.PrepareForWorldReload();
-        _entityRegistry.ChangeWorldGeneration(welcome.WorldGeneration);
+        _entityRegistry.PrepareSnapshot(welcome.WorldGeneration, Array.Empty<EntityLifecycleBinding>());
+        _genericStates.ResetForSnapshot();
         _welcome = welcome;
         _incomingWorld = new IncomingWorldFile(WorldFiles.PathFor(WorldFiles.ClientReceivedMapName), welcome.WorldByteLength);
         _phase = ClientPhase.ReceivingWorld;
@@ -472,7 +529,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         WeatherStateBridge.SuppressClientLoops();
         _connection!.Send(new ClientReadyMessage(_welcome!.TransferId));
         _phase = ClientPhase.Live;
-        if (_addons == null) _addons = Addons.SessionAddonRegistry.Start(false, () => LocalPlayerId, () => _welcome!.WorldGeneration, SendAddon, () => GameClock.Now + _addonHostClockOffset);
+        if (_addons == null) _addons = Addons.SessionAddonRegistry.Start(false, () => LocalPlayerId, () => _welcome!.WorldGeneration, SendAddon, this, () => GameClock.Now + _addonHostClockOffset);
         else _addons.Reload();
         foreach (RosterEntry player in _roster) _addons.PeerReady(player.PlayerId, PeerAddonCapabilities(player.PlayerId));
         ClientCommandBridge.Attach(this);
@@ -539,7 +596,14 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
         if (_phase == ClientPhase.Live)
         {
             SendCurrentPose(FamilyTimeMultiplayer.Game.GameClock.Now);
-            _pendingNativeCommands.Add(RequestGenericAction(NativeCommandActionAdapter.ActionId, NativeCommandActionAdapter.SchemaVersion, null, 0, MessageCodec.Encode(intent)));
+            NetworkEntityId? target = NativeCommandActionAdapter.TargetIdentity(intent, _entityRegistry.WorldGeneration);
+            ulong lifecycleRevision = 0;
+            if (target is NetworkEntityId identity && (!_entityRegistry.TryGetLocal(identity, out _) || !_entityRegistry.TryGetLifecycleRevision(identity, out lifecycleRevision)))
+            {
+                UI.PlayerNotice.Show("This command target has not been bound to the shared world yet.");
+                return;
+            }
+            _pendingNativeCommands.Add(RequestGenericAction(NativeCommandActionAdapter.ActionId, NativeCommandActionAdapter.SchemaVersion, target, lifecycleRevision, MessageCodec.Encode(intent)));
             _log.LogInfo($"[Client] command {intent.Kind}/{intent.TargetKind} sent to host");
         }
     }
@@ -630,6 +694,11 @@ public sealed class ClientSession : ISession, IClientCommandSink, Families.IClie
     {
         if (_pendingNativeCommands.Remove(result.RequestId) && result.Outcome != GenericActionOutcome.Executed)
             UI.PlayerNotice.Show($"Command {result.Outcome}: {result.Detail}");
+        if (_addonActionCallbacks.Remove(result.RequestId, out Action<GenericActionResultMessage>? callback))
+        {
+            try { callback(result); }
+            catch (Exception exception) { _log.LogWarning($"[Client] addon action callback failed: {exception.Message}"); }
+        }
         try { GenericActionCompleted?.Invoke(result); }
         catch (Exception exception) { _log.LogWarning($"[Client] generic action result callback failed: {exception.Message}"); }
     }

@@ -55,10 +55,10 @@ public static class SessionAddonRegistry
         Registered.Add(addon);
     }
     public static IReadOnlyList<AddonDescriptor> Descriptors => AddonCapabilities.Normalize(Registered.Select(item => item.Descriptor));
-    internal static SessionAddonRuntime Start(bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double>? hostTime = null)
+    internal static SessionAddonRuntime Start(bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, IAddonReplicationEndpoint replication, Func<double>? hostTime = null)
     {
         if (_active != null) throw new InvalidOperationException("A multiplayer addon session is already active.");
-        _active = new SessionAddonRuntime(Registered.ToArray(), host, localPlayer, generation, send, hostTime ?? (() => GameClock.Now));
+        _active = new SessionAddonRuntime(Registered.ToArray(), host, localPlayer, generation, send, hostTime ?? (() => GameClock.Now), replication);
         try { _active.Start(); return _active; }
         catch { _active.Dispose(); throw; }
     }
@@ -72,11 +72,11 @@ internal sealed class SessionAddonRuntime : IDisposable
     private readonly List<AddonContext> _contexts = new List<AddonContext>();
     private bool _disposed;
     private readonly Dictionary<int, HashSet<string>> _peerAddons = new Dictionary<int, HashSet<string>>();
-    public SessionAddonRuntime(ISessionAddon[] addons, bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double> hostTime)
+    public SessionAddonRuntime(ISessionAddon[] addons, bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double> hostTime, IAddonReplicationEndpoint replication)
     {
         _addons = addons;
         _host = host;
-        foreach (ISessionAddon addon in addons) _contexts.Add(new AddonContext(addon.Descriptor.Id, host, localPlayer, generation, send, hostTime));
+        foreach (ISessionAddon addon in addons) _contexts.Add(new AddonContext(addon.Descriptor.Id, host, localPlayer, generation, send, hostTime, replication));
     }
     public void Start() { for (int index = 0; index < _addons.Length; index++) _addons[index].OnSessionStarted(_contexts[index]); }
     public void PeerReady(int id, IEnumerable<AddonDescriptor> capabilities)
@@ -131,7 +131,7 @@ internal sealed class SessionAddonRuntime : IDisposable
     }
 }
 
-internal sealed class AddonContext : ISessionAddonContext
+internal sealed class AddonContext : IReplicatedSessionAddonContext
 {
     private readonly string _id;
     private readonly Func<int> _localPlayer;
@@ -140,7 +140,8 @@ internal sealed class AddonContext : ISessionAddonContext
     private readonly Action<int?, AddonMessage> _send;
     private readonly Dictionary<(int Player, ushort Agent), CommandOwnershipToken> _claims = new Dictionary<(int, ushort), CommandOwnershipToken>();
     private bool _stopped;
-    public AddonContext(string id, bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double> hostTime) { _id = id; IsHost = host; _localPlayer = localPlayer; _generation = generation; _send = send; _hostTime = hostTime; }
+    public AddonContext(string id, bool host, Func<int> localPlayer, Func<long> generation, Action<int?, AddonMessage> send, Func<double> hostTime, IAddonReplicationEndpoint replication) { Replication = new AddonReplicationContext(id, replication, RequireActive); _id = id; IsHost = host; _localPlayer = localPlayer; _generation = generation; _send = send; _hostTime = hostTime; }
+    public IAddonReplicationContext Replication { get; }
     public bool IsHost { get; }
     public int LocalPlayerId => _localPlayer();
     public double HostTime => _hostTime();

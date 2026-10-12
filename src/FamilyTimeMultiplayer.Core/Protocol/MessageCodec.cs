@@ -6,7 +6,7 @@ namespace FamilyTimeMultiplayer.Core.Protocol;
 
 public static class ProtocolConstants
 {
-    public const int Version = 23;
+    public const int Version = 24;
     public static bool IsCompatibleVersion(int remoteVersion) => remoteVersion == Version;
     public const long MaxWorldBytes = 1024L * 1024 * 1024;
     public static void RequireWorldLength(long length)
@@ -50,6 +50,8 @@ public static class MessageCodec
         var type = (MessageType)reader.ReadByte();
         INetMessage message = type switch
         {
+            MessageType.GenericEntityStateBatch => GenericEntityStateBatchMessage.Read(reader),
+            MessageType.EntityLifecycleMap => EntityLifecycleMapMessage.Read(reader),
             MessageType.Addon => AddonMessage.Read(reader),
             MessageType.GenericEntityState => GenericEntityStateMessage.Read(reader),
             MessageType.GenericActionRequest => GenericActionRequestMessage.Read(reader),

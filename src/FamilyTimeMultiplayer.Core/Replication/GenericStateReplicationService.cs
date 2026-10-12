@@ -80,6 +80,13 @@ public sealed class GenericStateReplicationService<TLocal> where TLocal : notnul
         _observedGeneration = entities.WorldGeneration;
     }
 
+    public void ResetForSnapshot()
+    {
+        _entities.AssertAccess();
+        ClearState();
+        _observedGeneration = _entities.WorldGeneration;
+    }
+
     public bool IsApplyingRemoteState => _applyingRemoteState;
 
     public void RegisterAdapter(IEntityComponentAdapter<TLocal> adapter)
@@ -309,12 +316,17 @@ public sealed class GenericStateReplicationService<TLocal> where TLocal : notnul
         _entities.AssertAccess();
         long generation = _entities.WorldGeneration;
         if (generation == _observedGeneration) return;
+        ClearState();
+        _observedGeneration = generation;
+    }
+
+    private void ClearState()
+    {
         _nextRevision.Clear();
         _lastApplied.Clear();
         _latest.Clear();
         _pending.Clear();
         _pendingPayloadBytes = 0;
-        _observedGeneration = generation;
     }
 
     private static GenericStateApplyResult Rejected(string error) =>

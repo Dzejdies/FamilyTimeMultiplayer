@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace FamilyTimeMultiplayer.Core.Replication;
 
@@ -18,6 +19,7 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
     private readonly Dictionary<NetworkEntityId, ulong> _lastRevision = new Dictionary<NetworkEntityId, ulong>();
     private readonly Dictionary<(NetworkEntityId Entity, EntityStateDomain Domain), ReplicationOwner> _owners =
         new Dictionary<(NetworkEntityId, EntityStateDomain), ReplicationOwner>();
+    private readonly Dictionary<NetworkEntityId, ulong> _snapshotRevisions = new();
     private readonly int _creatingThreadId = Environment.CurrentManagedThreadId;
 
     public GenericEntityRegistry(long worldGeneration, IEqualityComparer<TLocal>? localComparer = null)
@@ -39,17 +41,52 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
         EnsureCreatingThread();
         if (worldGeneration < WorldGeneration) throw new InvalidOperationException("World generation cannot move backwards.");
         if (worldGeneration == WorldGeneration) return;
+        ClearBindings();
+        WorldGeneration = worldGeneration;
+    }
+
+    public IReadOnlyList<EntityLifecycleBinding> CaptureLifecycle()
+    {
+        EnsureCreatingThread();
+        return _bindings.Select(pair => new EntityLifecycleBinding(pair.Key, pair.Value.Revision)).ToArray();
+    }
+
+    public void PrepareSnapshot(long generation, IEnumerable<EntityLifecycleBinding> bindings)
+    {
+        EnsureCreatingThread();
+        if (generation < WorldGeneration) throw new InvalidOperationException("Snapshot generation cannot move backwards.");
+        Dictionary<NetworkEntityId, ulong> revisions = ValidateSnapshot(generation, bindings);
+        ClearBindings();
+        WorldGeneration = generation;
+        foreach (var binding in revisions) _snapshotRevisions.Add(binding.Key, binding.Value);
+    }
+
+    private static Dictionary<NetworkEntityId, ulong> ValidateSnapshot(long generation, IEnumerable<EntityLifecycleBinding> bindings)
+    {
+        var revisions = new Dictionary<NetworkEntityId, ulong>();
+        foreach (EntityLifecycleBinding binding in bindings)
+        {
+            if (binding.Identity.WorldGeneration != generation || binding.Revision == 0 || !revisions.TryAdd(binding.Identity, binding.Revision))
+                throw new ArgumentException("Snapshot bindings must have unique identities and valid revisions in the current world.", nameof(bindings));
+        }
+        return revisions;
+    }
+
+    private void ClearBindings()
+    {
         _bindings.Clear();
         _identityByLocal.Clear();
         _lastRevision.Clear();
         _owners.Clear();
-        WorldGeneration = worldGeneration;
+        _snapshotRevisions.Clear();
     }
 
     public EntityLifecycleResult Register(NetworkEntityId identity, TLocal local, ulong revision)
     {
         EnsureIdentity(identity);
         RequireRevision(revision);
+        if (_snapshotRevisions.TryGetValue(identity, out ulong expected) && revision != expected)
+            throw new InvalidOperationException("Local binding must use the authoritative snapshot lifecycle revision.");
         if (_bindings.TryGetValue(identity, out Binding? existing))
         {
             if (existing.Revision == revision && _identityByLocal.Comparer.Equals(existing.Local, local))
@@ -61,6 +98,7 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
             throw Stale(identity, revision);
         if (_identityByLocal.TryGetValue(local, out NetworkEntityId existingIdentity))
             throw new InvalidOperationException($"Local entity is already bound to {existingIdentity}; refusing to bind it to {identity}.");
+        _snapshotRevisions.Remove(identity);
         _bindings.Add(identity, new Binding(local, revision));
         _identityByLocal.Add(local, identity);
         _lastRevision[identity] = revision;
@@ -71,6 +109,8 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
     {
         EnsureIdentity(identity);
         RequireRevision(revision);
+        if (_snapshotRevisions.TryGetValue(identity, out ulong expected) && revision <= expected) throw Stale(identity, revision);
+        _snapshotRevisions.Remove(identity);
         if (_bindings.TryGetValue(identity, out Binding? binding))
         {
             if (revision <= binding.Revision) throw Stale(identity, revision);
@@ -92,6 +132,7 @@ public sealed class GenericEntityRegistry<TLocal> where TLocal : notnull
     public ulong NextLifecycleRevision(NetworkEntityId identity)
     {
         EnsureIdentity(identity);
+        if (_snapshotRevisions.TryGetValue(identity, out ulong snapshotRevision)) return snapshotRevision;
         ulong previous = _lastRevision.TryGetValue(identity, out ulong revision) ? revision : 0;
         if (previous == ulong.MaxValue) throw new InvalidOperationException($"Lifecycle revision for {identity} is exhausted.");
         return previous + 1;
