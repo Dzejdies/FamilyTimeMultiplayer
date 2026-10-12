@@ -10,7 +10,7 @@ namespace FamilyTimeMultiplayer.Game.Actions;
 internal static class NativeCommandForwarding
 {
     internal static bool Owns(object controller, string field) =>
-        ClientCommandBridge.IsActive && World.commandService != null &&
+        ClientCommandBridge.CanForwardNativeAction && World.commandService != null &&
         ReferenceEquals(controller, Traverse.Create(World.commandService).Field<object>(field).Value);
 
     internal static bool SendRigid(RigidTransform rigid)

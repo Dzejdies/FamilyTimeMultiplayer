@@ -42,6 +42,7 @@ public sealed class GenericStateReplicationService<TLocal> where TLocal : notnul
     private long _observedGeneration;
     private int _pendingPayloadBytes;
     private bool _applyingRemoteState;
+    private readonly Func<IDisposable>? _beginNativeApply;
 
     private readonly struct StateKey : IEquatable<StateKey>
     {
@@ -73,10 +74,11 @@ public sealed class GenericStateReplicationService<TLocal> where TLocal : notnul
             PayloadChecksum == Crc32.Compute(message.Payload.ToArray());
     }
 
-    public GenericStateReplicationService(GenericEntityRegistry<TLocal> entities, bool isHost)
+    public GenericStateReplicationService(GenericEntityRegistry<TLocal> entities, bool isHost, Func<IDisposable>? beginNativeApply = null)
     {
         _entities = entities ?? throw new ArgumentNullException(nameof(entities));
         _isHost = isHost;
+        _beginNativeApply = beginNativeApply;
         _observedGeneration = entities.WorldGeneration;
     }
 
@@ -194,6 +196,7 @@ public sealed class GenericStateReplicationService<TLocal> where TLocal : notnul
         try
         {
             _applyingRemoteState = true;
+            using IDisposable? nativeApply = _beginNativeApply?.Invoke();
             adapter.Apply(local, message.SchemaVersion, message.Payload);
         }
         catch (Exception exception)

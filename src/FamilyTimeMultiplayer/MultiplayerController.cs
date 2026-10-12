@@ -26,7 +26,6 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
     private Action? _actionAfterWorldReady;
     private Action? _nativeWorldEntryAction;
     private bool _nativeWorldEntryStarted;
-    private readonly StartupStage _stage = new StartupStage();
     private RemoteAvatarPresenter _avatars = null!;
     private SessionProbe? _probe;
     private ScenarioRunner? _scenario;
@@ -431,23 +430,9 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
             _startupMenuShown = true;
             RequestMultiplayerPage();
         }
-        KeepStartupStage();
         DetectStartupChoice();
         RunActionAfterWorldReady();
         ReleaseTutorialWhenSettled();
-    }
-
-    private void KeepStartupStage()
-    {
-        GAT.PauseMenuBook? book = GAT.PauseMenuBook.ActiveInstance;
-        if (StartupGate.IsAwaitingChoice && book != null && !book.IsClosing)
-        {
-            _stage.Enter(book);
-        }
-        else
-        {
-            _stage.Exit();
-        }
     }
 
     private void DetectStartupChoice()
@@ -548,7 +533,6 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
     private void OnDestroy()
     {
         TryCleanup("session", Leave);
-        TryCleanup("startup stage", _stage.Exit);
         TryCleanup("startup gate", StartupGate.Release);
         TryCleanup("startup pause scope", Patches.WorldGenerationGatePatch.ReleasePendingPauseScope);
         TryCleanup("diagnostic scenario", () => _scenario?.Dispose());
@@ -567,7 +551,6 @@ public sealed class MultiplayerController : MonoBehaviour, ICoroutineHost, IMult
     private void OnApplicationQuit()
     {
         TryCleanup("session", Leave);
-        TryCleanup("startup stage", _stage.Exit);
         TryCleanup("startup gate", StartupGate.Release);
         TryCleanup("startup pause scope", Patches.WorldGenerationGatePatch.ReleasePendingPauseScope);
         TryCleanup("diagnostic scenario", () => _scenario?.Dispose());

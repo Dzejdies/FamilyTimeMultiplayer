@@ -25,6 +25,7 @@ public static class ClientCommandBridge
     private static IClientCommandSink? _sink;
 
     public static bool IsActive => _sink != null;
+    internal static bool CanForwardNativeAction => IsActive && ReplicationGate.BlocksLocalSimulation;
 
     public static int? HostAvailableWorkers { get; private set; }
 
@@ -49,7 +50,10 @@ public static class ClientCommandBridge
         RefreshLocalCrosshair();
     }
 
-    public static void Send(CommandIntentMessage intent) => _sink?.SendIntent(intent);
+    public static void Send(CommandIntentMessage intent)
+    {
+        if (CanForwardNativeAction) _sink!.SendIntent(intent);
+    }
 
     internal static bool TryGetHostAgent(ushort localStableIndex, out ushort hostStableIndex)
     {
@@ -88,6 +92,7 @@ public static class ClientCommandBridge
     {
         CommandService? service = World.commandService;
         if (service == null || World.isShuttingDown) return;
+        using var nativeCleanup = ReplicationGate.AuthorizeReplication();
         GameApiCompatibility.StopLocalSelectionGesture(service);
         FollowController? follow = Traverse.Create(service).Field<FollowController>("_follow").Value;
         if (follow != null) GameApiCompatibility.CancelFollowGesture(follow);

@@ -64,7 +64,7 @@ public static class ClientHolds
     private static IClientHoldSink? _sink;
     private static double _nextUpdate;
 
-    public static bool IsActive => _sink != null;
+    public static bool IsActive => _sink != null && ReplicationGate.BlocksLocalSimulation;
 
     public static double UpdateInterval { get; set; } = 1.0 / 30.0;
 

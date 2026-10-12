@@ -17,7 +17,7 @@ using UnityEngine;
 
 namespace FamilyTimeMultiplayer.Sessions;
 
-public sealed class ClientSession : ISession, IClientCommandSink, IAddonReplicationEndpoint, Families.IClientBedSink, Holds.IClientHoldSink
+public sealed partial class ClientSession : ISession, IClientCommandSink, IAddonReplicationEndpoint, Families.IClientBedSink, Holds.IClientHoldSink
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
     private const int MaxConnectAttempts = 15;
@@ -82,7 +82,7 @@ public sealed class ClientSession : ISession, IClientCommandSink, IAddonReplicat
         _target = target;
         _endpointDescription = target.Description;
         _interpolator = new SnapshotInterpolator<ushort>(settings.InterpolationDelaySeconds);
-        _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: false);
+        _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: false, () => ReplicationGate.AuthorizeReplication());
         _genericStates.RegisterAdapter(new AgentInfoComponentAdapter(ApplyNativeAgentInfo));
         _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds, _entityRegistry);
         _registry = new ReplicatedAgentRegistry(_puppeteer, _entityRegistry);
@@ -109,65 +109,6 @@ public sealed class ClientSession : ISession, IClientCommandSink, IAddonReplicat
     public ushort AvatarStableIndex => _welcome?.AvatarStableIndex ?? ushort.MaxValue;
 
     public AgentIdentityMap Identities => _registry.Identities;
-
-    bool IAddonReplicationEndpoint.IsHost => false;
-    GenericEntityRegistry<object> IAddonReplicationEndpoint.Entities => _entityRegistry;
-    bool IAddonReplicationEndpoint.IsApplyingRemoteState => _genericStates.IsApplyingRemoteState;
-    void IAddonReplicationEndpoint.EntityAvailable(NetworkEntityId identity) => ApplyPendingGenericState(identity);
-    void IAddonReplicationEndpoint.ForgetGenericEntityState(NetworkEntityId identity) => _genericStates.ForgetEntity(identity);
-    bool IAddonReplicationEndpoint.PublishGenericState(NetworkEntityId identity, object entity, string adapterId) =>
-        throw new InvalidOperationException("Only the host may publish component state.");
-    void IAddonReplicationEndpoint.RegisterAddonAction(string addonId, IGenericActionAdapter<object> adapter) =>
-        throw new InvalidOperationException("Register action execution handlers on the host.");
-
-    void IAddonReplicationEndpoint.RegisterAddonState(string addonId, IEntityComponentAdapter<object> adapter)
-    {
-        _replicationCapabilities.RegisterState(addonId, adapter.Descriptor);
-        RegisterGenericStateAdapter(adapter);
-    }
-
-    Guid IAddonReplicationEndpoint.RequestAddonAction(string addonId, string actionId, int schemaVersion,
-        NetworkEntityId? target, ulong lifecycleRevision, byte[] payload, Action<GenericActionResultMessage> completed)
-    {
-        _replicationCapabilities.RequireScopedName(addonId, actionId);
-        if (!_sharedAddons.Any(addon => addon.Id == addonId)) throw new InvalidOperationException("Host does not support this optional addon.");
-        if (completed == null) throw new ArgumentNullException(nameof(completed));
-        SendCurrentPose(GameClock.Now);
-        Guid requestId = RequestGenericAction(actionId, schemaVersion, target, lifecycleRevision, payload);
-        _addonActionCallbacks.Add(requestId, completed);
-        return requestId;
-    }
-
-    private void ApplyGenericState(GenericEntityStateMessage state)
-    {
-        if (!_replicationCapabilities.SupportsState(_sharedAddons, state)) throw new InvalidDataException("Host sent component state for an unnegotiated addon.");
-        GenericStateApplyResult result = _genericStates.Apply(state);
-        if (result.Status is GenericStateApplyStatus.Rejected or GenericStateApplyStatus.ResyncRequired)
-            throw new InvalidOperationException(result.Error);
-    }
-
-    private static void ApplyNativeAgentInfo(ushort localIndex, uint info)
-    {
-        if (localIndex == LocalPlayer.PossessedHandle.stableIndex) return;
-        GatInterop.RequireGat().SetInstanceInfo(GatInterop.ToHandle(localIndex), GatInterop.CreateInstanceInfo(AgentInfoBits.ForPuppet(info)));
-    }
-
-    public void RegisterGenericStateAdapter(IEntityComponentAdapter<object> adapter) =>
-        _genericStates.RegisterAdapter(adapter);
-
-    public IReadOnlyList<GenericStateApplyResult> NotifyGenericEntityAvailable(NetworkEntityId identity) =>
-        _genericStates.OnEntityAvailable(identity);
-
-    public event Action<GenericActionResultMessage>? GenericActionCompleted;
-
-    public Guid RequestGenericAction(string actionId, int schemaVersion, NetworkEntityId? target, ulong lifecycleRevision, byte[] payload)
-    {
-        if (_phase != ClientPhase.Live || _welcome == null || _connection == null) throw new InvalidOperationException("Generic actions require a live session.");
-        var request = new GenericActionRequestMessage(actionId, schemaVersion, Guid.NewGuid(), _welcome.WorldGeneration, target, lifecycleRevision, payload);
-        _pendingGenericActions.Add(request.RequestId);
-        _connection.Send(request);
-        return request.RequestId;
-    }
 
     public int LastPuppetCount => _puppeteer.LastAppliedCount;
 
