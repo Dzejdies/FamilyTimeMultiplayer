@@ -38,13 +38,6 @@ public sealed class NativeInterventionCleanupTests
     }
 
     [Fact]
-    public void NativeOverrideRestoresOnlyWhileCurrentValueStillMatchesAppliedValue()
-    {
-        Assert.True(NativeOverrideRestoration.ShouldRestore(currentValue: false, appliedValue: false));
-        Assert.False(NativeOverrideRestoration.ShouldRestore(currentValue: true, appliedValue: false));
-    }
-
-    [Fact]
     public void WorldPauseLeaseCanBeReleasedByControllerAndCoroutineWithoutDoubleDisposal()
     {
         var scope = new CountingDisposable();

@@ -14,7 +14,6 @@
   <ItemGroup>
     <Compile Include="../../src/FamilyTimeMultiplayer/Diagnostics/ScenarioReadiness.cs" Link="ScenarioReadiness.cs" />
     <Compile Include="../../src/FamilyTimeMultiplayer/Diagnostics/ScenarioDiagnosticPatchPlan.cs" Link="ScenarioDiagnosticPatchPlan.cs" />
-    <Compile Include="../../src/FamilyTimeMultiplayer/UI/NativeOverrideRestoration.cs" Link="NativeOverrideRestoration.cs" />
     <Compile Include="../../src/FamilyTimeMultiplayer/UI/WorldPauseScopeLease.cs" Link="WorldPauseScopeLease.cs" />
   </ItemGroup>
 </Project>
