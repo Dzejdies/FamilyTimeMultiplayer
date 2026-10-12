@@ -21,7 +21,7 @@ using UnityEngine;
 
 namespace FamilyTimeMultiplayer.Sessions;
 
-public sealed partial class HostSession : ISession, IHostReplicationObserver, INightParticipants, IAddonReplicationEndpoint
+public sealed partial class HostSession : ISession, IHostReplicationObserver, IHostCommandLockObserver, INightParticipants, IAddonReplicationEndpoint
 {
     private const int MaxQueuedFramesBeforeSkippingSnapshots = 8;
     private const double DayStateInterval = 1.0;
@@ -130,6 +130,8 @@ public sealed partial class HostSession : ISession, IHostReplicationObserver, IN
         _agentEntities = new LegacyAgentIdentityAdapter(_entityRegistry);
         _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: true);
         _genericStates.RegisterAdapter(_agentInfoState);
+        _genericStates.RegisterAdapter(new CommandLockComponentAdapter(NativeCommandLockReplication.Read,
+            (_, _) => throw new InvalidOperationException("Host cannot apply remote command locks.")));
         _rigids = new HostRigidRegistry(_entityRegistry);
         _familyMode = familyMode;
         _log = log;
@@ -270,6 +272,7 @@ public sealed partial class HostSession : ISession, IHostReplicationObserver, IN
         {
             _info.Tick(now, PublishAgentInfo);
         }
+        StreamCommandLocks(now);
         StreamSnapshots(now);
         StreamDayState(now);
         BroadcastPool(now);
@@ -303,6 +306,7 @@ public sealed partial class HostSession : ISession, IHostReplicationObserver, IN
             if (!handle.isNull)
             {
                 _agentInfoState.Forget(handle.stableIndex);
+                _lastCommandLocks.Remove(handle.stableIndex);
                 _agentEntities.Unbind(handle.stableIndex);
                 ForgetGenericEntityState(LegacyAgentIdentityAdapter.Kind, handle.stableIndex);
             }
@@ -340,6 +344,8 @@ public sealed partial class HostSession : ISession, IHostReplicationObserver, IN
         _addonWorldGeneration++;
         _entityRegistry.ChangeWorldGeneration(_addonWorldGeneration);
         _agentInfoState.Reset();
+        _lastCommandLocks.Clear();
+        _nextCommandLockSample = 0;
         _info.SendEverythingNext();
         _addons.Reload();
         HostPlayerAuthority.Remove(LocalPlayerId);
@@ -846,6 +852,7 @@ public sealed partial class HostSession : ISession, IHostReplicationObserver, IN
 
     private void HandleReady(Peer peer)
     {
+        PublishCommandLocks();
         List<INetMessage> backlog = peer.Backlog ?? new List<INetMessage>();
         peer.Backlog = null;
         foreach (GenericEntityStateBatchMessage batch in GenericEntityStateBatchMessage.CreateBatches(

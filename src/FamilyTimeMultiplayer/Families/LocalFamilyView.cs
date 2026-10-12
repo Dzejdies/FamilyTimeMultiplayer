@@ -21,6 +21,14 @@ public static class LocalFamilyView
         _ => false,
     };
 
+    public static bool IncludesChild(Handle handle)
+    {
+        if (MultiplayerController.Current?.Session is ClientSession client)
+            return client.FamilyMode != FamilyMode.Separate ||
+                client.TryGetHostAgent(handle.stableIndex, out ushort hostIndex) && _members.Contains(hostIndex);
+        return HostFamilyService.Current?.BelongsToActiveOwner(handle) ?? true;
+    }
+
     public static int[] PhysicalMembers()
     {
         if (World.gat == null) return System.Array.Empty<int>();

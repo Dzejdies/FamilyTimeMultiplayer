@@ -297,6 +297,14 @@ internal static class GameApiCompatibility
         }
     }
 
+    public static void InvalidateNativeCommandLocks()
+    {
+        if (World.commandService == null) return;
+        object groups = AccessTools.Field(typeof(CommandService), "_lockGroups").GetValue(World.commandService);
+        if (groups != null) ResolveMethod(groups.GetType(), "InvalidateIndividualLocks").Invoke(groups, null);
+        ResolveMethod(typeof(CommandService), "RefreshCrosshairIndicators").Invoke(World.commandService, null);
+    }
+
     public static void ResetLocalCommandGestures(CommandService service) => service.ResetTutorialGestures();
 
     public static void ActivateFollowCursor(FollowController follow)

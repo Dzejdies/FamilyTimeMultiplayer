@@ -4,6 +4,7 @@ using System.Linq;
 using System.Reflection;
 using FamilyTimeMultiplayer.Commands;
 using FamilyTimeMultiplayer.Core.Protocol;
+using FamilyTimeMultiplayer.Families;
 using GAT;
 using HarmonyLib;
 using UnityEngine;
@@ -168,13 +169,45 @@ internal static class NativeStationForwardPatch
 [HarmonyPatch(typeof(CommandOwnershipService), nameof(CommandOwnershipService.SetCommandLocked), typeof(Handle), typeof(bool))]
 internal static class NativeCommandLockForwardPatch
 {
-    private static bool Prefix(Handle __0, ref bool __result, bool __runOriginal)
+    private static bool Prefix(Handle __0, bool __1, ref bool __result, bool __runOriginal)
     {
         if (!__runOriginal) return false;
-        if (!ClientCommandBridge.IsActive || !ReplicationGate.BlocksLocalSimulation) return true;
-        __result = ClientCommandBridge.TryGetHostAgent(__0.stableIndex, out ushort identity);
-        if (__result) ClientCommandBridge.Send(CommandIntentMessage.ToggleCommandLock(identity));
+        if (ReplicationGate.Role != SessionRole.Client && HostFamilyService.Current != null && !LocalFamilyView.IncludesChild(__0))
+        {
+            __result = false;
+            return false;
+        }
+        if (!ClientCommandBridge.CanForwardNativeAction) return true;
+        __result = NativeCommandForwarding.SendCommandLock(__0, __1);
         return false;
+    }
+}
+
+[HarmonyPatch(typeof(CommandOwnershipService), nameof(CommandOwnershipService.SetCommandLocked), typeof(Handle[]), typeof(bool))]
+internal static class NativeCommandLockBatchForwardPatch
+{
+    private static bool Prefix(ref Handle[] __0, bool __1, ref int __result, bool __runOriginal)
+    {
+        if (!__runOriginal) return false;
+        if (__0 == null) throw new ArgumentNullException("handles");
+        if (ReplicationGate.Role != SessionRole.Client && HostFamilyService.Current != null) __0 = __0.Where(LocalFamilyView.IncludesChild).ToArray();
+        if (!ClientCommandBridge.CanForwardNativeAction) return true;
+        __result = __0.Distinct().Count(handle => NativeCommandForwarding.SendCommandLock(handle, __1));
+        return false;
+    }
+}
+
+[HarmonyPatch]
+internal static class NativeCommandLockStateObserver
+{
+    private static IEnumerable<MethodBase> TargetMethods() => typeof(CommandOwnershipService).GetMethods()
+        .Where(method => method.Name == nameof(CommandOwnershipService.SetCommandLocked));
+
+    private static void Postfix(bool __runOriginal)
+    {
+        if (__runOriginal && ReplicationGate.Role == SessionRole.Host && !World.isShuttingDown &&
+            ReplicationGate.HostObserver is IHostCommandLockObserver observer)
+            observer.OnCommandLocksChanged();
     }
 }
 

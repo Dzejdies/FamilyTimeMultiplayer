@@ -178,7 +178,8 @@ public sealed class RemoteCommander : IRemoteCommanderIdentity, IDisposable
                     HandleInteract(intent, rigids, report);
                     break;
                 case CommandIntentKind.CommandLock:
-                    ToggleCommandLock(intent, report);
+                case CommandIntentKind.SetCommandLock:
+                    SetCommandLock(intent, report);
                     break;
                 case CommandIntentKind.PickupSweepStarted:
                     BeginPickupSweep(intent, rigids);
@@ -202,11 +203,11 @@ public sealed class RemoteCommander : IRemoteCommanderIdentity, IDisposable
             throw new System.IO.InvalidDataException("Pickup sweep requires a rigid target.");
         float reach = HostPlayerAuthority.HandReach;
         Vector3 point;
-        if (intent.Kind == CommandIntentKind.CommandLock || intent.TargetKind == CommandTargetKind.Agent)
+        if (intent.IsCommandLock || intent.TargetKind == CommandTargetKind.Agent)
         {
             if (intent.RigidNetId < 0 || intent.RigidNetId >= ushort.MaxValue) throw new System.IO.InvalidDataException("Invalid agent target.");
             point = HostPlayerAuthority.AgentPosition((ushort)intent.RigidNetId);
-            if (intent.Kind == CommandIntentKind.CommandLock) HostPlayerAuthority.RequireOwnedAgent(PlayerId, (ushort)intent.RigidNetId);
+            if (intent.IsCommandLock) HostPlayerAuthority.RequireOwnedAgent(PlayerId, (ushort)intent.RigidNetId);
             else if (World.gat.GetTemplateFromHandle(GatInterop.ToHandle((ushort)intent.RigidNetId))?.faction <= Faction.PLAYER) throw new System.IO.InvalidDataException("Target is not an attackable animal.");
         }
         else if (intent.TargetKind == CommandTargetKind.Rigid)
@@ -428,7 +429,7 @@ public sealed class RemoteCommander : IRemoteCommanderIdentity, IDisposable
         }
     }
 
-    private void ToggleCommandLock(CommandIntentMessage intent, Action<CommandResult> report)
+    private void SetCommandLock(CommandIntentMessage intent, Action<CommandResult> report)
     {
         Handle target = GatInterop.ToHandle((ushort)intent.RigidNetId);
         if (intent.RigidNetId < 0 || intent.RigidNetId >= ushort.MaxValue || !_ownership.IsCommandLockCandidate(target))
@@ -436,7 +437,7 @@ public sealed class RemoteCommander : IRemoteCommanderIdentity, IDisposable
             report(CommandResult.Refused("that cannot be locked"));
             return;
         }
-        bool locked = !_ownership.IsCommandLocked(target);
+        bool locked = intent.Kind == CommandIntentKind.SetCommandLock ? intent.CommandLocked : !_ownership.IsCommandLocked(target);
         if (_ownership.SetCommandLocked(target, locked))
         {
             CommandAudioCatalog.PlayNative(CommandAudioCatalog.ForLockState(locked));

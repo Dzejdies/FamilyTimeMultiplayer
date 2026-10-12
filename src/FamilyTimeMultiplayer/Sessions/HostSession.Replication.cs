@@ -44,6 +44,36 @@ public sealed partial class HostSession
         NetworkEntityId? target, ulong lifecycleRevision, byte[] payload, Action<GenericActionResultMessage> completed) =>
         throw new InvalidOperationException("Host adapters execute their local native actions directly and publish the results.");
 
+    private const double CommandLockSampleInterval = 1.0;
+    private readonly Dictionary<ushort, bool> _lastCommandLocks = new();
+    private double _nextCommandLockSample;
+
+    public void OnCommandLocksChanged() => PublishCommandLocks();
+
+    private void StreamCommandLocks(double now)
+    {
+        if (now < _nextCommandLockSample) return;
+        _nextCommandLockSample = now + CommandLockSampleInterval;
+        PublishCommandLocks();
+    }
+
+    private void PublishCommandLocks()
+    {
+        var states = new List<GenericEntityStateMessage>();
+        foreach (Handle handle in GameFamilyAccess.CurrentChildren())
+        {
+            bool locked = NativeCommandLockReplication.Read(handle.stableIndex);
+            if (_lastCommandLocks.TryGetValue(handle.stableIndex, out bool previous) && previous == locked) continue;
+            var identity = new NetworkEntityId(_entityRegistry.WorldGeneration, LegacyAgentIdentityAdapter.Kind, handle.stableIndex);
+            if (!_entityRegistry.TryGetLocal(identity, out object local)) continue;
+            GenericEntityStateMessage? state = _genericStates.Publish(identity, local, CommandLockComponentAdapter.AdapterId);
+            if (state == null) continue;
+            _lastCommandLocks[handle.stableIndex] = locked;
+            states.Add(state);
+        }
+        BroadcastGenericStates(states);
+    }
+
     private void PublishAgentInfo(AgentInfoMessage message)
     {
         var states = new List<GenericEntityStateMessage>();
@@ -55,6 +85,11 @@ public sealed partial class HostSession
             GenericEntityStateMessage? state = _genericStates.Publish(identity, local, AgentInfoComponentAdapter.AdapterId);
             if (state != null) states.Add(state);
         }
+        BroadcastGenericStates(states);
+    }
+
+    private void BroadcastGenericStates(IEnumerable<GenericEntityStateMessage> states)
+    {
         foreach (GenericEntityStateBatchMessage batch in GenericEntityStateBatchMessage.CreateBatches(states)) SendWorldEvent(batch);
     }
 

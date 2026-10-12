@@ -29,6 +29,11 @@ public interface IHostReplicationObserver
     void OnHostWorldReloaded();
 }
 
+public interface IHostCommandLockObserver
+{
+    void OnCommandLocksChanged();
+}
+
 public static class ReplicationGate
 {
     private static int _authorizedDepth;

@@ -17,15 +17,3 @@ internal static class ClientGlobalPoolPatch
         }
     }
 }
-
-[HarmonyPatch(typeof(CommandOwnershipService), nameof(CommandOwnershipService.WorkerTemplateAgentCount), MethodType.Getter)]
-internal static class ClientGlobalPoolTotalPatch
-{
-    private static void Postfix(ref int __result)
-    {
-        if (ClientCommandBridge.IsActive && ClientCommandBridge.HostTotalWorkers.HasValue)
-        {
-            __result = ClientCommandBridge.HostTotalWorkers.Value;
-        }
-    }
-}

@@ -84,6 +84,7 @@ public sealed partial class ClientSession : ISession, IClientCommandSink, IAddon
         _interpolator = new SnapshotInterpolator<ushort>(settings.InterpolationDelaySeconds);
         _genericStates = new GenericStateReplicationService<object>(_entityRegistry, isHost: false, () => ReplicationGate.AuthorizeReplication());
         _genericStates.RegisterAdapter(new AgentInfoComponentAdapter(ApplyNativeAgentInfo));
+        _genericStates.RegisterAdapter(new CommandLockComponentAdapter(NativeCommandLockReplication.Read, NativeCommandLockReplication.Apply));
         _rigids = new ClientRigidRegistry(settings.InterpolationDelaySeconds, _entityRegistry);
         _registry = new ReplicatedAgentRegistry(_puppeteer, _entityRegistry);
         _mamas = new Families.ClientMamaMirror(log);

@@ -1,5 +1,6 @@
 using System;
 using FamilyTimeMultiplayer.Commands;
+using FamilyTimeMultiplayer.Families;
 using FamilyTimeMultiplayer.Core.Protocol;
 using GAT;
 using HarmonyLib;
@@ -24,6 +25,14 @@ internal static class NativeCommandForwarding
     {
         if (target.isNull || !ClientCommandBridge.TryGetHostAgent(target.stableIndex, out ushort identity)) return MissingTarget();
         ClientCommandBridge.Send(CommandIntentMessage.InteractAgent(identity, GatInterop.ToNet(position)));
+        return true;
+    }
+
+    internal static bool SendCommandLock(Handle target, bool locked)
+    {
+        if (!LocalFamilyView.IncludesChild(target)) return false;
+        if (target.isNull || !ClientCommandBridge.TryGetHostAgent(target.stableIndex, out ushort identity)) return MissingTarget();
+        ClientCommandBridge.Send(CommandIntentMessage.SetCommandLock(identity, locked));
         return true;
     }
 
