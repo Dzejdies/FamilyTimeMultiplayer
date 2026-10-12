@@ -46,7 +46,7 @@ internal sealed class NativeInputProbe
         if (!worldReady) { BootstrapNativeWorld(); return null; }
         object? controller = _staticValue("FamilyTimeMultiplayer.MultiplayerController", "Current");
         object? session = _value(controller, "Session");
-        if (session == null || Convert.ToInt32(_value(_value(session, "Roster"), "Count") ?? 0) < 2) return null;
+        if (session == null || (_value(session, "Roster") as IEnumerable)?.Cast<object>().Skip(1).Any() is not true) return null;
         if (_value(session, "Role")?.ToString() == "Host") return SpawnHostAnimal(session);
         if (_value(session, "IsLive") is not true) return null;
         return CheckClientLifecycle();
